@@ -249,7 +249,8 @@ public class P25P2ConfigurationEditor extends ChannelConfigurationEditor
             mIgnoreDoNotMonitorButton.setDisable(true);
             mIgnoreDoNotMonitorButton.setTooltip(new Tooltip("Don't decode calls to talkgroups whose alias has " +
                 "the Do Not Monitor audio priority.  Saves processing load: no traffic channel is started, so those " +
-                "calls are not recorded or streamed.  Patch calls are always decoded."));
+                "calls are not recorded or streamed.  Patch calls are only skipped when every patched talkgroup is " +
+                "Do Not Monitor."));
             mIgnoreDoNotMonitorButton.selectedProperty()
                 .addListener((observable, oldValue, newValue) -> modifiedProperty().set(true));
         }

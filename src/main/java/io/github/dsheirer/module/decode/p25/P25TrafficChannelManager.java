@@ -35,6 +35,7 @@ import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
 import io.github.dsheirer.identifier.alias.TalkerAliasManager;
 import io.github.dsheirer.identifier.encryption.EncryptionKeyIdentifier;
+import io.github.dsheirer.identifier.patch.PatchGroup;
 import io.github.dsheirer.identifier.patch.PatchGroupIdentifier;
 import io.github.dsheirer.identifier.patch.PatchGroupPreLoadDataContent;
 import io.github.dsheirer.identifier.scramble.ScrambleParameterIdentifier;
@@ -1166,8 +1167,11 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
     /**
      * Indicates if the call should not be decoded because the decoder is configured to ignore Do Not Monitor calls
-     * and the call's TO talkgroup is aliased with the Do Not Monitor audio priority.  Patch group calls are never
-     * ignored since the patch may include talkgroups that are monitored.
+     * and the call's TO talkgroup is aliased with the Do Not Monitor audio priority.
+     *
+     * Patch group calls are only ignored when every patched talkgroup is aliased as Do Not Monitor and the patch
+     * group's own talkgroup is either aliased as Do Not Monitor or not aliased at all.  A patch with any monitored
+     * or un-aliased member talkgroup, or with patched radios, is always decoded.
      * @param ic for the call
      * @return true if a traffic channel should not be allocated for the call
      */
@@ -1180,12 +1184,67 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
         Identifier to = ic.getToIdentifier();
 
-        if(to == null || to.getForm() != Form.TALKGROUP)
+        if(to == null)
         {
             return false;
         }
 
-        for(Alias alias: mAliasList.getAliases(to))
+        if(to.getForm() == Form.TALKGROUP)
+        {
+            return isDoNotMonitor(to);
+        }
+
+        if(to instanceof PatchGroupIdentifier patchGroupIdentifier)
+        {
+            PatchGroup patchGroup = patchGroupIdentifier.getValue();
+
+            if(patchGroup == null || patchGroup.hasPatchedRadios())
+            {
+                return false;
+            }
+
+            List<TalkgroupIdentifier> patchedTalkgroups = patchGroup.getPatchedTalkgroupIdentifiers();
+            TalkgroupIdentifier patchTalkgroup = patchGroup.getPatchGroup();
+            boolean patchTalkgroupAliased = patchTalkgroup != null && !mAliasList.getAliases(patchTalkgroup).isEmpty();
+
+            if(patchedTalkgroups == null || patchedTalkgroups.isEmpty())
+            {
+                //No known members - decide on the patch group talkgroup alone
+                return patchTalkgroupAliased && isDoNotMonitor(patchTalkgroup);
+            }
+
+            if(patchTalkgroupAliased && !isDoNotMonitor(patchTalkgroup))
+            {
+                return false;
+            }
+
+            for(TalkgroupIdentifier patchedTalkgroup: patchedTalkgroups)
+            {
+                if(!isDoNotMonitor(patchedTalkgroup))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Indicates if the talkgroup has an alias with the Do Not Monitor audio priority.
+     * @param talkgroup to check
+     * @return true if aliased as Do Not Monitor, false if not aliased or aliased with any other priority
+     */
+    private boolean isDoNotMonitor(Identifier talkgroup)
+    {
+        if(talkgroup == null)
+        {
+            return false;
+        }
+
+        for(Alias alias: mAliasList.getAliases(talkgroup))
         {
             if(alias != null && alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)
             {
