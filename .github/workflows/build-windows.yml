@@ -1,0 +1,83 @@
+# Builds SDR-Trunk for Windows from any point in DSheirer/sdrtrunk's history, on GitHub's servers.
+# Each build is kept as its own release named build-<date>-<commit>, so older builds are never overwritten.
+#
+# Run it: Actions tab -> "Build Windows (choose version)" -> Run workflow -> enter a version -> Run.
+#   latest       newest code on DSheirer/sdrtrunk
+#   2026-09-26   the last change made on or before that date
+#   a9120ed      an exact commit id
+name: Build Windows (choose version)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version: latest, a date (YYYY-MM-DD) or a commit id'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get SDR-Trunk source from DSheirer/sdrtrunk
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          git clone --filter=blob:none https://github.com/DSheirer/sdrtrunk.git src
+          cd src
+          if [ "$WANTED" = "latest" ]; then
+            SHA=$(git rev-parse origin/master)
+          elif [[ "$WANTED" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            SHA=$(git rev-list -1 --before="$WANTED 23:59:59 -0400" origin/master)
+          else
+            SHA=$(git rev-parse "$WANTED^{commit}")
+          fi
+          if [ -z "$SHA" ]; then echo "No version found for: $WANTED"; exit 1; fi
+          git checkout -q "$SHA"
+          SHORT=$(git rev-parse --short=7 "$SHA")
+          CDATE=$(git log -1 --format=%cd --date=format:%Y-%m-%d "$SHA")
+          JAVA=$(grep -oP 'JavaLanguageVersion\.of\(\K[0-9]+' build.gradle | head -1)
+          {
+            echo "SHA=$SHA"
+            echo "SHORT=$SHORT"
+            echo "CDATE=$CDATE"
+            echo "JAVA=${JAVA:-26}"
+            echo "TAG=build-$CDATE-$SHORT"
+          } >> "$GITHUB_ENV"
+          echo "Building $SHORT from $CDATE: $(git log -1 --format=%s "$SHA")"
+
+      - name: Set up Java ${{ env.JAVA }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA }}
+          distribution: 'liberica'
+          java-package: 'jdk+fx'
+
+      - name: Build Windows release
+        working-directory: src
+        run: ./gradlew runtimeZipWindows -PprojectVersion=${{ env.CDATE }}-${{ env.SHORT }}
+
+      - name: Write release notes
+        working-directory: src
+        run: |
+          {
+            echo "SDR-Trunk built from DSheirer/sdrtrunk commit [${SHORT}](https://github.com/DSheirer/sdrtrunk/commit/${SHA}), last change ${CDATE}."
+            echo
+            echo "Changes in this build (newest first, back to v0.6.1):"
+            echo
+            git log --format='- %cd %s' --date=short v0.6.1.."$SHA" 2>/dev/null | head -120 || true
+          } > ../release-notes.md
+          ls -la build/image/
+
+      - name: Save as its own release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: SDR-Trunk ${{ env.CDATE }} (${{ env.SHORT }})
+          body_path: release-notes.md
+          prerelease: true
+          files: src/build/image/*windows-x86_64*.zip
