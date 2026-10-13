@@ -35,9 +35,12 @@ import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierClass;
 import io.github.dsheirer.identifier.Role;
 import io.github.dsheirer.identifier.alias.TalkerAliasIdentifier;
+import io.github.dsheirer.identifier.configuration.ChannelNameConfigurationIdentifier;
 import io.github.dsheirer.identifier.configuration.ConfigurationLongIdentifier;
+import io.github.dsheirer.identifier.configuration.SiteConfigurationIdentifier;
 import io.github.dsheirer.identifier.patch.PatchGroup;
 import io.github.dsheirer.identifier.patch.PatchGroupIdentifier;
+import io.github.dsheirer.identifier.radio.FullyQualifiedRadioIdentifier;
 import io.github.dsheirer.identifier.radio.RadioIdentifier;
 import io.github.dsheirer.identifier.talkgroup.TalkgroupIdentifier;
 import io.github.dsheirer.util.ThreadPool;
@@ -235,6 +238,9 @@ public class RdioScannerBroadcaster extends AbstractAudioBroadcaster<RdioScanner
                 String talkgroupLabel = getTalkgroupLabel(audioRecording);
                 String talkgroupGroup = getTalkgroupGroup(audioRecording);
                 String systemLabel = getSystemLabel(audioRecording);
+                String channelName = getChannelName(audioRecording);
+                String siteName = getSiteName(audioRecording);
+                String sourceFullyQualified = getSourceFullyQualified(audioRecording);
                 String path = audioRecording.getPath().toString();
                 // Remove TEMPORARY_STREAM_FILE_SUFFIX
                 String audioName = path.substring(path.substring(0, path.lastIndexOf("_")).lastIndexOf("_") + 1);
@@ -268,7 +274,10 @@ public class RdioScannerBroadcaster extends AbstractAudioBroadcaster<RdioScanner
                             .addPart(FormField.TALKGROUP_LABEL, talkgroupLabel)
                             .addPart(FormField.TALKGROUP_GROUP, talkgroupGroup)
                             .addPart(FormField.SYSTEM_LABEL, systemLabel)
-                            .addPart(FormField.PATCHES, patches);
+                            .addPart(FormField.PATCHES, patches)
+                            .addPart(FormField.CHANNEL_NAME, channelName)
+                            .addPart(FormField.SITE_NAME, siteName)
+                            .addPart(FormField.SOURCE_FULLY_QUALIFIED, sourceFullyQualified);
 
                         HttpRequest fileRequest = HttpRequest.newBuilder()
                             .uri(URI.create(getBroadcastConfiguration().getHost()))
@@ -538,6 +547,59 @@ public class RdioScannerBroadcaster extends AbstractAudioBroadcaster<RdioScanner
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Name of the channel (from the playlist) that produced the recording.  Traffic channels are named after their
+     * control channel with a "T-" prefix, which is removed so the value identifies the control channel / site.
+     * @return channel name or null if not available
+     */
+    private static String getChannelName(AudioRecording audioRecording)
+    {
+        for(Identifier identifier: audioRecording.getIdentifierCollection().getIdentifiers(Form.CHANNEL))
+        {
+            if(identifier instanceof ChannelNameConfigurationIdentifier channelName && channelName.getValue() != null)
+            {
+                String name = channelName.getValue();
+                return name.startsWith("T-") ? name.substring(2) : name;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Site label from the playlist channel configuration that produced the recording.
+     * @return site label or null if not available
+     */
+    private static String getSiteName(AudioRecording audioRecording)
+    {
+        for(Identifier identifier: audioRecording.getIdentifierCollection().getIdentifiers(Form.SITE))
+        {
+            if(identifier instanceof SiteConfigurationIdentifier site && site.getValue() != null && !site.getValue().isBlank())
+            {
+                return site.getValue();
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Fully qualified (WACN.SYSTEM.RADIO) address of the talker when the radio is roaming from another system.
+     * @return fully qualified address or null if the talker is not fully qualified
+     */
+    private static String getSourceFullyQualified(AudioRecording audioRecording)
+    {
+        for(Identifier identifier: audioRecording.getIdentifierCollection().getIdentifiers(Role.FROM))
+        {
+            if(identifier instanceof FullyQualifiedRadioIdentifier fqri)
+            {
+                return fqri.getFullyQualifiedRadioAddress();
+            }
+        }
+
+        return null;
     }
 
     /**
