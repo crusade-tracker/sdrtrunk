@@ -70,6 +70,7 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
     private EventLogConfigurationEditor mEventLogConfigurationEditor;
     private RecordConfigurationEditor mRecordConfigurationEditor;
     private ToggleSwitch mIgnoreDataCallsButton;
+    private ToggleSwitch mIgnoreDoNotMonitorButton;
     private Spinner<Integer> mTrafficChannelPoolSizeSpinner;
     private SegmentedButton mModulationSegmentedButton;
     private ToggleButton mC4FMToggleButton;
@@ -146,8 +147,16 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
             gridPane.getChildren().add(directionLabel);
 
             Label modulationHelpLabel = new Label("C4FM: repeaters and non-simulcast trunked systems.  LSM: simulcast trunked systems.");
-            GridPane.setConstraints(modulationHelpLabel, 0, 1, 6, 1);
+            GridPane.setConstraints(modulationHelpLabel, 0, 1, 4, 1);
             gridPane.getChildren().add(modulationHelpLabel);
+
+            GridPane.setConstraints(getIgnoreDoNotMonitorButton(), 4, 1);
+            gridPane.getChildren().add(getIgnoreDoNotMonitorButton());
+
+            Label ignoreDoNotMonitorLabel = new Label("Ignore Do Not Monitor Calls");
+            GridPane.setHalignment(ignoreDoNotMonitorLabel, HPos.LEFT);
+            GridPane.setConstraints(ignoreDoNotMonitorLabel, 5, 1);
+            gridPane.getChildren().add(ignoreDoNotMonitorLabel);
 
             mDecoderPane.setContent(gridPane);
         }
@@ -283,6 +292,22 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
         return mIgnoreDataCallsButton;
     }
 
+    private ToggleSwitch getIgnoreDoNotMonitorButton()
+    {
+        if(mIgnoreDoNotMonitorButton == null)
+        {
+            mIgnoreDoNotMonitorButton = new ToggleSwitch();
+            mIgnoreDoNotMonitorButton.setDisable(true);
+            mIgnoreDoNotMonitorButton.setTooltip(new Tooltip("Don't decode calls to talkgroups whose alias has " +
+                "the Do Not Monitor audio priority.  Saves processing load: no traffic channel is started, so those " +
+                "calls are not recorded or streamed.  Patch calls are always decoded."));
+            mIgnoreDoNotMonitorButton.selectedProperty()
+                .addListener((observable, oldValue, newValue) -> modifiedProperty().set(true));
+        }
+
+        return mIgnoreDoNotMonitorButton;
+    }
+
     private Spinner<Integer> getTrafficChannelPoolSizeSpinner()
     {
         if(mTrafficChannelPoolSizeSpinner == null)
@@ -325,12 +350,14 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
     protected void setDecoderConfiguration(DecodeConfiguration config)
     {
         getIgnoreDataCallsButton().setDisable(config == null);
+        getIgnoreDoNotMonitorButton().setDisable(config == null);
         getTrafficChannelPoolSizeSpinner().setDisable(config == null);
 
         if(config instanceof DecodeConfigP25Phase1)
         {
             DecodeConfigP25Phase1 decodeConfig = (DecodeConfigP25Phase1)config;
             getIgnoreDataCallsButton().setSelected(decodeConfig.getIgnoreDataCalls());
+            getIgnoreDoNotMonitorButton().setSelected(decodeConfig.getIgnoreDoNotMonitor());
             getTrafficChannelPoolSizeSpinner().getValueFactory().setValue(decodeConfig.getTrafficChannelPoolSize());
             if(decodeConfig.getModulation() == Modulation.C4FM)
             {
@@ -346,6 +373,7 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
         else
         {
             getIgnoreDataCallsButton().setSelected(false);
+            getIgnoreDoNotMonitorButton().setSelected(false);
             getTrafficChannelPoolSizeSpinner().getValueFactory().setValue(0);
         }
     }
@@ -365,6 +393,7 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
         }
 
         config.setIgnoreDataCalls(getIgnoreDataCallsButton().isSelected());
+        config.setIgnoreDoNotMonitor(getIgnoreDoNotMonitorButton().isSelected());
         config.setTrafficChannelPoolSize(getTrafficChannelPoolSizeSpinner().getValue());
         config.setModulation(getC4FMToggleButton().isSelected() ? Modulation.C4FM : Modulation.CQPSK);
         getItem().setDecodeConfiguration(config);

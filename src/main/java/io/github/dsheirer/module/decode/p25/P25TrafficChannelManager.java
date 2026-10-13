@@ -18,6 +18,9 @@
  */
 package io.github.dsheirer.module.decode.p25;
 
+import io.github.dsheirer.alias.Alias;
+import io.github.dsheirer.alias.AliasList;
+import io.github.dsheirer.alias.id.priority.Priority;
 import io.github.dsheirer.channel.IChannelDescriptor;
 import io.github.dsheirer.controller.channel.Channel;
 import io.github.dsheirer.controller.channel.Channel.ChannelType;
@@ -26,6 +29,7 @@ import io.github.dsheirer.controller.channel.ChannelEvent.Event;
 import io.github.dsheirer.controller.channel.IChannelEventListener;
 import io.github.dsheirer.controller.channel.IChannelEventProvider;
 import io.github.dsheirer.controller.channel.event.ChannelStartProcessingRequest;
+import io.github.dsheirer.identifier.Form;
 import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
@@ -106,6 +110,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private static final LoggingSuppressor LOGGING_SUPPRESSOR = new LoggingSuppressor(mLog);
     public static final String CHANNEL_START_REJECTED = "CHANNEL START REJECTED";
     public static final String MAX_TRAFFIC_CHANNELS_EXCEEDED = "MAX TRAFFIC CHANNELS EXCEEDED";
+    public static final String IGNORED_DO_NOT_MONITOR = "IGNORED: DO NOT MONITOR";
 
     private Queue<Channel> mAvailablePhase1TrafficChannelQueue = new LinkedTransferQueue<>();
     private Queue<Channel> mAvailablePhase2TrafficChannelQueue = new LinkedTransferQueue<>();
@@ -123,6 +128,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private ScrambleParameters mPhase2ScrambleParameters;
     private Listener<IMessage> mMessageListener;
     private boolean mIgnoreDataCalls;
+    private boolean mIgnoreDoNotMonitor;
+    private AliasList mAliasList;
     //Used only for data calls
     private DecodeEventDuplicateDetector mDuplicateDetector = new DecodeEventDuplicateDetector();
     private TalkerAliasManager mTalkerAliasManager = new TalkerAliasManager();
@@ -138,12 +145,14 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase1 phase1)
         {
             mIgnoreDataCalls = phase1.getIgnoreDataCalls();
+            mIgnoreDoNotMonitor = phase1.getIgnoreDoNotMonitor();
             createPhase1TrafficChannels(phase1.getTrafficChannelPoolSize(), phase1);
             createPhase2TrafficChannels(phase1.getTrafficChannelPoolSize(), new DecodeConfigP25Phase2());
         }
         else if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase2 phase2)
         {
             mIgnoreDataCalls = phase2.getIgnoreDataCalls();
+            mIgnoreDoNotMonitor = phase2.getIgnoreDoNotMonitor();
             createPhase1TrafficChannels(phase2.getTrafficChannelPoolSize(), new DecodeConfigP25Phase1());
             createPhase2TrafficChannels(phase2.getTrafficChannelPoolSize(), phase2);
         }
@@ -1144,6 +1153,49 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         return completed;
     }
 
+
+    /**
+     * Sets the alias list for the parent channel.  Used to identify calls to talkgroups that are aliased with the
+     * Do Not Monitor audio priority when the decoder is configured to ignore those calls.
+     * @param aliasList for the parent channel, can be null
+     */
+    public void setAliasList(AliasList aliasList)
+    {
+        mAliasList = aliasList;
+    }
+
+    /**
+     * Indicates if the call should not be decoded because the decoder is configured to ignore Do Not Monitor calls
+     * and the call's TO talkgroup is aliased with the Do Not Monitor audio priority.  Patch group calls are never
+     * ignored since the patch may include talkgroups that are monitored.
+     * @param ic for the call
+     * @return true if a traffic channel should not be allocated for the call
+     */
+    private boolean isIgnoredDoNotMonitor(IdentifierCollection ic)
+    {
+        if(!mIgnoreDoNotMonitor || mAliasList == null || ic == null)
+        {
+            return false;
+        }
+
+        Identifier to = ic.getToIdentifier();
+
+        if(to == null || to.getForm() != Form.TALKGROUP)
+        {
+            return false;
+        }
+
+        for(Alias alias: mAliasList.getAliases(to))
+        {
+            if(alias != null && alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Sends a channel start request to the ChannelProcessingManager.
      *
@@ -1242,7 +1294,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
-            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant))
+            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) &&
+                !isIgnoredDoNotMonitor(ic))
             {
                 Channel trafficChannel = mAvailablePhase1TrafficChannelQueue.poll();
 
@@ -1284,6 +1337,19 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 broadcast(tracker);
             }
 
+            return;
+        }
+
+        if(isIgnoredDoNotMonitor(ic))
+        {
+            P25ChannelGrantEvent ignoredEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                    .channelDescriptor(apco25Channel)
+                    .details(IGNORED_DO_NOT_MONITOR + " - PHASE 1 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                    .identifiers(ic)
+                    .build();
+            tracker = new P25ChannelEventTracker(ignoredEvent);
+            addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+            broadcast(tracker);
             return;
         }
 
@@ -1368,7 +1434,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
             if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) &&
-                (getCurrentControlFrequency() != frequency))
+                (getCurrentControlFrequency() != frequency) && !isIgnoredDoNotMonitor(ic))
             {
                 Channel trafficChannel = mAvailablePhase2TrafficChannelQueue.poll();
 
@@ -1399,6 +1465,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             tracker = new P25ChannelEventTracker(event);
             addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+            broadcast(tracker);
+            return;
+        }
+
+        if(isIgnoredDoNotMonitor(ic))
+        {
+            P25ChannelGrantEvent ignoredEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                .channelDescriptor(apco25Channel)
+                .details(IGNORED_DO_NOT_MONITOR + " - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                .identifiers(ic)
+                .timeslot(apco25Channel.getTimeslot())
+                .build();
+            tracker = new P25ChannelEventTracker(ignoredEvent);
+            addTracker(tracker, frequency, timeslot);
             broadcast(tracker);
             return;
         }

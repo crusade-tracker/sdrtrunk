@@ -34,6 +34,7 @@ public abstract class DecodeConfigP25 extends DecodeConfiguration
 {
     private int mTrafficChannelPoolSize = TRAFFIC_CHANNEL_LIMIT_DEFAULT;
     private boolean mIgnoreDataCalls = false;
+    private boolean mIgnoreDoNotMonitor = false;
 
     public DecodeConfigP25()
     {
@@ -48,6 +49,21 @@ public abstract class DecodeConfigP25 extends DecodeConfiguration
     public void setIgnoreDataCalls(boolean ignore)
     {
         mIgnoreDataCalls = ignore;
+    }
+
+    /**
+     * Indicates if calls to a talkgroup whose alias has the Do Not Monitor audio priority should not be decoded.  When
+     * enabled, no traffic channel is allocated for those calls, saving the processing load of decoding them.
+     */
+    @JacksonXmlProperty(isAttribute = true, localName = "ignore_do_not_monitor")
+    public boolean getIgnoreDoNotMonitor()
+    {
+        return mIgnoreDoNotMonitor;
+    }
+
+    public void setIgnoreDoNotMonitor(boolean ignore)
+    {
+        mIgnoreDoNotMonitor = ignore;
     }
 
 

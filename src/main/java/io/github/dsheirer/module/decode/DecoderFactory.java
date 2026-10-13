@@ -231,6 +231,7 @@ public class DecoderFactory
         if(channel.getChannelType() == ChannelType.STANDARD)
         {
             p25TrafficChannelManager = new P25TrafficChannelManager(channel);
+            p25TrafficChannelManager.setAliasList(aliasList);
         }
         else if(trafficChannelManager instanceof P25TrafficChannelManager p25)
         {
@@ -239,6 +240,7 @@ public class DecoderFactory
         else
         {
             p25TrafficChannelManager = new P25TrafficChannelManager(channel);
+            p25TrafficChannelManager.setAliasList(aliasList);
         }
 
         //Only add traffic channel manager to the modules if this is the control channel
@@ -298,6 +300,7 @@ public class DecoderFactory
         if(channel.getChannelType() == ChannelType.STANDARD)
         {
             P25TrafficChannelManager primaryTCM = new P25TrafficChannelManager(channel);
+            primaryTCM.setAliasList(aliasList);
             modules.add(primaryTCM);
             modules.add(new P25P1DecoderState(channel, primaryTCM));
         }
@@ -867,12 +870,14 @@ public class DecoderFactory
                     DecodeConfigP25Phase1 originalP25 = (DecodeConfigP25Phase1)config;
                     DecodeConfigP25Phase1 copyP25 = new DecodeConfigP25Phase1();
                     copyP25.setIgnoreDataCalls(originalP25.getIgnoreDataCalls());
+                    copyP25.setIgnoreDoNotMonitor(originalP25.getIgnoreDoNotMonitor());
                     copyP25.setModulation(originalP25.getModulation());
                     copyP25.setTrafficChannelPoolSize(originalP25.getTrafficChannelPoolSize());
                     return copyP25;
                 case P25_PHASE2:
                     DecodeConfigP25Phase2 originalP25P2 = (DecodeConfigP25Phase2)config;
                     DecodeConfigP25Phase2 copyP25P2 = new DecodeConfigP25Phase2();
+                    copyP25P2.setIgnoreDoNotMonitor(originalP25P2.getIgnoreDoNotMonitor());
 
                     if(originalP25P2.getScrambleParameters() != null)
                     {
