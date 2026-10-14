@@ -33,7 +33,11 @@ import io.github.dsheirer.controller.channel.ChannelEvent;
 import io.github.dsheirer.controller.channel.ChannelException;
 import io.github.dsheirer.controller.channel.ChannelModel;
 import io.github.dsheirer.controller.channel.ChannelProcessingManager;
+import io.github.dsheirer.alias.id.priority.Priority;
+import io.github.dsheirer.identifier.Form;
 import io.github.dsheirer.identifier.Identifier;
+import io.github.dsheirer.identifier.IdentifierClass;
+import io.github.dsheirer.identifier.Role;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.module.decode.event.DecodeEventType;
 import io.github.dsheirer.module.decode.event.IDecodeEvent;
@@ -69,6 +73,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -100,6 +105,12 @@ public class StatusReporter
     private final ChannelModel mChannelModel;
     private final ConcurrentLinkedQueue<Map<String,Object>> mResults = new ConcurrentLinkedQueue<>();
     private final Set<String> mDoneCommands = Collections.synchronizedSet(new LinkedHashSet<>());
+    //Talkgroups heard in calls that don't reach the scanner (no alias, or alias not streamed) - sent with each report
+    private final Map<String,Map<String,Object>> mUnstreamed = new ConcurrentHashMap<>();
+    private volatile Set<String> mStreamNames = Set.of();
+    //Which playlist channels each tuner was carrying (last seen while it was working), so Enable / Restart can bring
+    //them back - SDR-Trunk stops a tuner's channels when it's disabled or fails, and doesn't restart them itself
+    private final Map<String,List<Integer>> mTunerChannels = new ConcurrentHashMap<>();
     private final ObjectMapper mMapper = new ObjectMapper();
     private final HttpClient mHttpClient = HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)   //no h2c upgrade - the scanner's main port treats upgrades as websockets
@@ -174,7 +185,15 @@ public class StatusReporter
             };
 
             //The same event object is updated and re-sent while a call continues - count it once
-            if(kind == null || !mSeenEvents.add(event))
+            if(kind == null)
+            {
+                if((type == DecodeEventType.CALL_GROUP || type == DecodeEventType.CALL) && mSeenEvents.add(event))
+                {
+                    checkStreamed(event);
+                }
+                return;
+            }
+            if(!mSeenEvents.add(event))
             {
                 return;
             }
@@ -228,6 +247,120 @@ public class StatusReporter
         {
             //ignore
         }
+    }
+
+    /**
+     * Notes a talkgroup call that won't reach the scanner: no alias for the talkgroup, or its alias has no broadcast
+     * channel for the Rdio Scanner stream. Talkgroups set to Do Not Monitor (Listen off) are left out - that's on purpose.
+     */
+    private void checkStreamed(IDecodeEvent event)
+    {
+        IdentifierCollection ic = event.getIdentifierCollection();
+        if(ic == null)
+        {
+            return;
+        }
+        Identifier to = ic.getToIdentifier();
+        if(to == null || to.getForm() != Form.TALKGROUP)
+        {
+            return;
+        }
+
+        List<Alias> aliases = List.of();
+        AliasList list = mAliasModel.getAliasList(ic);
+        if(list != null)
+        {
+            List<Alias> found = list.getAliases(to);
+            if(found != null)
+            {
+                aliases = found;
+            }
+        }
+
+        String reason;
+        if(aliases.isEmpty())
+        {
+            reason = "no alias";
+        }
+        else
+        {
+            Set<String> streams = mStreamNames;
+            if(streams.isEmpty())
+            {
+                streams = streamNames();
+            }
+            for(Alias alias: aliases)
+            {
+                if(alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)
+                {
+                    return;
+                }
+                for(String stream: streams)
+                {
+                    if(alias.hasBroadcastChannel(stream))
+                    {
+                        return;   //streamed - the scanner gets it
+                    }
+                }
+            }
+            reason = "not streamed";
+        }
+
+        String system = configValue(ic, Form.SYSTEM);
+        String site = configValue(ic, Form.SITE);
+        String tg = String.valueOf(to.getValue());
+        String key = system + "|" + site + "|" + tg;
+        String alias = aliases.isEmpty() ? null : aliases.get(0).getName();
+        Long freq = event.getChannelDescriptor() != null ? event.getChannelDescriptor().getDownlinkFrequency() : null;
+        long t = event.getTimeStart() > 0 ? event.getTimeStart() : System.currentTimeMillis();
+
+        mUnstreamed.compute(key, (k, m) -> {
+            if(m == null)
+            {
+                m = new LinkedHashMap<>();
+                m.put("system", system);
+                m.put("site", site);
+                m.put("tg", tg);
+                m.put("count", 0);
+                m.put("first", t);
+            }
+            m.put("alias", alias);
+            m.put("reason", reason);
+            m.put("freq", freq);
+            m.put("last", t);
+            m.put("count", (Integer)m.get("count") + 1);
+            return m;
+        });
+    }
+
+    private static String configValue(IdentifierCollection ic, Form form)
+    {
+        Identifier id = ic.getIdentifier(IdentifierClass.CONFIGURATION, form, Role.ANY);
+        return id != null && id.getValue() != null ? String.valueOf(id.getValue()) : null;
+    }
+
+    /**
+     * Names of the enabled Rdio Scanner streams - an alias reaches the scanner when it has a broadcast channel by one of
+     * these names
+     */
+    private Set<String> streamNames()
+    {
+        Set<String> names = new java.util.HashSet<>();
+        try
+        {
+            for(BroadcastConfiguration config: new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()))
+            {
+                if(config instanceof RdioScannerConfiguration && config.isEnabled() && config.getName() != null)
+                {
+                    names.add(config.getName());
+                }
+            }
+        }
+        catch(Exception e)
+        {
+            //changed while reading - next time
+        }
+        return names;
     }
 
     private void queue(Map<String,Object> e)
@@ -304,9 +437,23 @@ public class StatusReporter
             Runtime rt = Runtime.getRuntime();
             body.put("memUsedMB", (rt.totalMemory() - rt.freeMemory()) / 1048576);
             body.put("memMaxMB", rt.maxMemory() / 1048576);
-            body.put("tuners", tuners(events));
+            mStreamNames = streamNames();
+            List<Map<String,Object>> tuners = tuners(events);
+            List<Map<String,Object>> configured = configuredChannels();
+            rememberTunerChannels(tuners, configured);
+            body.put("tuners", tuners);
             body.put("channels", channels());
-            body.put("configured", configuredChannels());
+            body.put("configured", configured);
+            List<Map<String,Object>> unstreamed = new ArrayList<>();
+            for(String k: new ArrayList<>(mUnstreamed.keySet()))
+            {
+                Map<String,Object> u = mUnstreamed.remove(k);
+                if(u != null)
+                {
+                    unstreamed.add(u);
+                }
+            }
+            body.put("unstreamed", unstreamed);
             body.put("events", events);
             List<Map<String,Object>> results = new ArrayList<>();
             Map<String,Object> r;
@@ -337,6 +484,7 @@ public class StatusReporter
             {
                 requeue(events);
                 results.forEach(mResults::add);
+                unstreamed.forEach(u -> mUnstreamed.putIfAbsent(u.get("system") + "|" + u.get("site") + "|" + u.get("tg"), u));
                 problem("server answered " + response.statusCode() + " from " + status);
             }
         }
@@ -534,6 +682,84 @@ public class StatusReporter
     }
 
     /**
+     * Notes which running playlist channels sit inside each working tuner's band. Only updated while the tuner is working,
+     * so after it's disabled or fails we still know what it was carrying.
+     */
+    @SuppressWarnings("unchecked")
+    private void rememberTunerChannels(List<Map<String,Object>> tuners, List<Map<String,Object>> configured)
+    {
+        for(Map<String,Object> t: tuners)
+        {
+            if(!"ENABLED".equals(t.get("status")) || !(t.get("centre") instanceof Long centre) ||
+                !(t.get("usable") instanceof Integer usable) || !(t.get("channels") instanceof Integer n) || n == 0)
+            {
+                continue;
+            }
+            List<Integer> ids = new ArrayList<>();
+            for(Map<String,Object> c: configured)
+            {
+                if(Boolean.TRUE.equals(c.get("processing")) && c.get("freqs") instanceof List<?> freqs &&
+                    freqs.stream().anyMatch(f -> f instanceof Long hz && Math.abs(hz - centre) <= usable / 2))
+                {
+                    ids.add((Integer)c.get("id"));
+                }
+            }
+            if(!ids.isEmpty())
+            {
+                mTunerChannels.put(String.valueOf(t.get("id")), ids);
+            }
+        }
+    }
+
+    /**
+     * Starts the playlist channels a tuner was carrying that aren't running now. Returns a note for the command result.
+     */
+    private String restartTunerChannels(String tunerId)
+    {
+        List<Integer> ids = mTunerChannels.get(tunerId);
+        if(ids == null || ids.isEmpty())
+        {
+            return "";
+        }
+        try
+        {
+            Thread.sleep(1500);   //let the tuner finish starting
+        }
+        catch(InterruptedException ie)
+        {
+            return "";
+        }
+        List<String> started = new ArrayList<>();
+        List<String> failed = new ArrayList<>();
+        for(Integer id: ids)
+        {
+            try
+            {
+                Channel c = findChannel(String.valueOf(id));
+                if(!c.isProcessing())
+                {
+                    startChannel(c);
+                    started.add(c.getName());
+                }
+            }
+            catch(Exception e)
+            {
+                failed.add(e.getMessage());
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        if(!started.isEmpty())
+        {
+            sb.append("; started its channels again: ").append(String.join(", ", started));
+        }
+        if(!failed.isEmpty())
+        {
+            sb.append("; couldn't start: ").append(String.join("; ", failed));
+        }
+        return sb.toString();
+    }
+
+    /**
      * Every channel in the playlist (not traffic channels), running or not, so the admin can start and stop them
      */
     private List<Map<String,Object>> configuredChannels()
@@ -652,7 +878,13 @@ public class StatusReporter
             });
             try
             {
-                return future.get(30, TimeUnit.SECONDS);
+                String message = future.get(30, TimeUnit.SECONDS);
+                if(("tuner_enable".equals(action) && message.endsWith(" enabled")) ||
+                   ("tuner_restart".equals(action) && message.contains(" restarted")))
+                {
+                    message += restartTunerChannels(target);
+                }
+                return message;
             }
             catch(java.util.concurrent.ExecutionException ee)
             {
@@ -715,8 +947,10 @@ public class StatusReporter
                 {
                     return dt.getId() + " was already disabled";
                 }
+                List<Integer> carried = mTunerChannels.getOrDefault(dt.getId(), List.of());
                 dt.setEnabled(false);
-                return dt.getId() + " disabled - its channels move to other tuners if they can";
+                return dt.getId() + " disabled - SDR-Trunk stopped its channels" +
+                    (carried.isEmpty() ? "" : " (" + carried.size() + "); Enable starts them again");
             }
             case "tuner_restart":
             {
@@ -767,6 +1001,23 @@ public class StatusReporter
                     mTunerManager.saveConfigurations();
                 }
                 return dt.getId() + " PPM " + before + " -> " + ppm + (config != null ? " (saved)" : " (not saved - no tuner configuration)");
+            }
+            case "tuner_autoppm":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                boolean on = "on".equals(String.valueOf(value));
+                if(!dt.hasTuner() || dt.getTuner().getTunerController().getTunerFrequencyErrorManager() == null)
+                {
+                    throw new Exception(dt.getId() + " isn't running - enable it first");
+                }
+                dt.getTuner().getTunerController().getTunerFrequencyErrorManager().setEnabled(on);
+                TunerConfiguration config = dt.getTunerConfiguration();
+                if(config != null)
+                {
+                    config.setAutoPPMCorrectionEnabled(on);
+                    mTunerManager.saveConfigurations();
+                }
+                return dt.getId() + " Auto PPM " + (on ? "on" : "off") + (config != null ? " (saved)" : "");
             }
             default:
                 throw new Exception("unknown command '" + action + "' - this SDR-Trunk build is older than the scanner");
