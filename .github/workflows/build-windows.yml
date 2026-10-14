@@ -65,19 +65,21 @@ jobs:
           TITLE="SDR-Trunk $CDATE ($SHORT)$SUFFIX"
           VERSION="$CDATE-$SHORT$SUFFIX"
           if [ -n "$NAME" ]; then
-            # Named build: date it was built + the name. A second build with the same name that day gets -2, -3...
+            # Named build: date it was built, the day's build number, and the name.
             BDATE=$(TZ=America/New_York date +%Y-%m-%d)
             SLUG=$(echo "$NAME" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
             WHO=$([ -n "$BRANCH" ] && echo "Rod build" || echo "SDR-Trunk")
-            BASETAG="$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )-$BDATE-$SLUG"
-            TAG="$BASETAG"; N=1
-            while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$BASETAG-$N"; done
+            KIND=$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )
+            # GitHub lists these releases by tag name, Z to A - so the tag carries the build number of the day right after
+            # the date (rod-2026-10-15-02-name) and the newest build always comes first.
+            SAMEDAY=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/$KIND-$BDATE-" --jq length 2>/dev/null || echo 0)
+            N=$((SAMEDAY + 1))
+            TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"
+            while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"; done
             TITLE="$WHO $BDATE - $NAME"
-            if [ "$N" -gt 1 ]; then TITLE="$TITLE ($N)"; fi
-            # Title bar stays short: date + "rod" (+ -2, -3 for later builds that day). The full name is on the release.
-            SAMEDAY=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )-$BDATE-" --jq length 2>/dev/null || echo 0)
+            # Title bar stays short: date + "rod" (-2, -3 for later builds that day). The full name is on the release.
             VERSION="$BDATE-$( [ -n "$BRANCH" ] && echo rod || echo build )"
-            if [ "$SAMEDAY" -gt 0 ]; then VERSION="$VERSION-$((SAMEDAY + 1))"; fi
+            if [ "$N" -gt 1 ]; then VERSION="$VERSION-$N"; fi
           fi
           {
             echo "SHA=$SHA"
@@ -134,8 +136,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          # GitHub orders releases by the date of the commit the tag points at. Pointing a branch build's tag at the commit
-          # it built (instead of this script's own commit) gives each build its own date, so the newest is listed first.
+          # The tag points at the commit that was built, so each release shows its own commit date.
           target_commitish: ${{ inputs.branch != '' && env.SHA || github.sha }}
           name: ${{ env.TITLE }}
           body_path: release-notes.md
