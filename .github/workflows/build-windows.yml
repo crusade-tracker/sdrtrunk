@@ -1,7 +1,8 @@
 # Builds SDR-Trunk for Windows from any point in DSheirer/sdrtrunk's history, on GitHub's servers.
 # Each build is kept as its own release, so older builds are never overwritten.
 # Give it a name ("Remote control", "Auto PPM fix") and that is what the release, its tag, the zip and SDR-Trunk's
-# title bar show: "Rod build 2026-10-14 - Remote control". Leave the name empty for the old build-<date>-<commit> style.
+# zip show: "Rod build 2026-10-14 - Remote control". SDR-Trunk's title bar just shows v2026-10-14-rod (-2, -3 for a
+# second or third build that day). Leave the name empty for the old build-<date>-<commit> style.
 #
 # Run it: Actions tab -> "Build Windows (choose version)" -> Run workflow -> enter a version -> Run.
 #   latest       newest code on DSheirer/sdrtrunk
@@ -73,7 +74,10 @@ jobs:
             while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$BASETAG-$N"; done
             TITLE="$WHO $BDATE - $NAME"
             if [ "$N" -gt 1 ]; then TITLE="$TITLE ($N)"; fi
-            VERSION="${TAG#rod-}"; VERSION="${VERSION#sdrtrunk-}"
+            # Title bar stays short: date + "rod" (+ -2, -3 for later builds that day). The full name is on the release.
+            SAMEDAY=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )-$BDATE-" --jq length 2>/dev/null || echo 0)
+            VERSION="$BDATE-$( [ -n "$BRANCH" ] && echo rod || echo build )"
+            if [ "$SAMEDAY" -gt 0 ]; then VERSION="$VERSION-$((SAMEDAY + 1))"; fi
           fi
           {
             echo "SHA=$SHA"
