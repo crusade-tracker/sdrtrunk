@@ -170,7 +170,7 @@ public class RdioScannerEditor extends AbstractBroadcastEditor<RdioScannerConfig
             GridPane.setConstraints(getSystemIdTextField(), 1, row);
             mEditorPane.getChildren().add(getSystemIdTextField());
 
-            Label hostLabel = new Label("RdioScanner URL");
+            Label hostLabel = new Label("Scanner URL");
             GridPane.setHalignment(hostLabel, HPos.RIGHT);
             GridPane.setConstraints(hostLabel, 0, ++row);
             mEditorPane.getChildren().add(hostLabel);

@@ -449,7 +449,7 @@ public class StatusReporter
             RdioScannerConfiguration config = getConfiguration();
             if(config == null)
             {
-                problem("no enabled Rdio Scanner streaming configuration - status reports are off");
+                problem("no enabled Radio Scanner streaming configuration - status reports are off");
                 return;
             }
 
