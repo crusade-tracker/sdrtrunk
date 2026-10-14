@@ -37,6 +37,7 @@ public class AudioRecording implements Comparable<AudioRecording>
     private AtomicInteger mPendingReplayCount = new AtomicInteger();
     private IdentifierCollection mIdentifierCollection;
     private Collection<BroadcastChannel> mBroadcastChannels;
+    private String mDetails;
 
     /**
      * Audio recording that is ready to be streamed
@@ -86,6 +87,20 @@ public class AudioRecording implements Comparable<AudioRecording>
     public boolean hasIdentifierCollection()
     {
         return mIdentifierCollection != null;
+    }
+
+    /**
+     * Rod build: extra call details (JSON) for the scanner - who talked when, emergency, call type, network ids.
+     * Null when not available.
+     */
+    public String getDetails()
+    {
+        return mDetails;
+    }
+
+    public void setDetails(String details)
+    {
+        mDetails = details;
     }
 
     /**

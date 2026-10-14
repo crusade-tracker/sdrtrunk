@@ -27,6 +27,9 @@ import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.identifier.IdentifierUpdateNotification;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
+import io.github.dsheirer.identifier.Role;
+import io.github.dsheirer.identifier.alias.TalkerAliasIdentifier;
+import io.github.dsheirer.identifier.radio.RadioIdentifier;
 import io.github.dsheirer.identifier.encryption.EncryptionKeyIdentifier;
 import io.github.dsheirer.sample.Broadcaster;
 import io.github.dsheirer.sample.Listener;
@@ -83,6 +86,9 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
     private boolean mDisposing = false;
     private AudioSegment mLinkedAudioSegment;
     private int mTimeslot;
+    //Rod build: every radio heard talking in this segment, in order, with when it started (ms into the audio). The
+    //identifier collection only keeps the last FROM, so a handoff inside one segment would otherwise be lost.
+    private final List<Talker> mTalkers = new CopyOnWriteArrayList<>();
 
     /**
      * Constructs an instance
@@ -440,6 +446,7 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
     public void addIdentifier(Identifier identifier)
     {
         mIdentifierCollection.update(identifier);
+        noteTalker(identifier);
 
         /**
          * If we have a late-add encryption key, set the encrypted flag to true.
@@ -470,6 +477,50 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
             }
         }
     }
+
+    /**
+     * Rod build: records a change of talker (FROM radio), and the talker alias for the current talker.
+     */
+    private void noteTalker(Identifier identifier)
+    {
+        try
+        {
+            if(identifier == null || identifier.getRole() != Role.FROM)
+            {
+                return;
+            }
+            Talker last = mTalkers.isEmpty() ? null : mTalkers.get(mTalkers.size() - 1);
+            if(identifier instanceof RadioIdentifier radio && radio.getValue() != null)
+            {
+                int id = radio.getValue();
+                if(id != 0 && (last == null || last.radio() != id))
+                {
+                    if(mTalkers.size() < 50)
+                    {
+                        mTalkers.add(new Talker(getDuration(), id, radio, null));
+                    }
+                }
+            }
+            else if(identifier instanceof TalkerAliasIdentifier alias && last != null && alias.getValue() != null)
+            {
+                mTalkers.set(mTalkers.size() - 1, new Talker(last.offset(), last.radio(), last.identifier(), alias.getValue()));
+            }
+        }
+        catch(Exception e)
+        {
+            //never let this get in the way of audio
+        }
+    }
+
+    /**
+     * Rod build: radios heard talking in this segment, in order (offset = milliseconds into the audio)
+     */
+    public List<Talker> getTalkers()
+    {
+        return List.copyOf(mTalkers);
+    }
+
+    public record Talker(long offset, int radio, Identifier identifier, String talkerAlias) {}
 
     /**
      * Indicates if this audio segment has been flagged as a duplicate audio call

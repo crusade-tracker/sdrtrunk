@@ -199,6 +199,7 @@ public class StatusReporter
     {
         try
         {
+            CallDetails.noteEvent(event);   //grants: emergency / priority for the call details sent with uploads
             DecodeEventType type = event.getEventType();
             String kind = switch(type)
             {

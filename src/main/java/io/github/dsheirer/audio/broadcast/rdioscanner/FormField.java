@@ -29,6 +29,7 @@ public enum FormField
     AUDIO_TYPE("audioType"),
     CHANNEL_NAME("channelName"),
     DATE_TIME("dateTime"),
+    DETAILS("details"),   //Rod build: extra call details (JSON) - see monitor/CallDetails
     FREQUENCIES("frequencies"),
     FREQUENCY("frequency"),
     KEY("key"),

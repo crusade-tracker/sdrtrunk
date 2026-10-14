@@ -235,6 +235,8 @@ public class AudioStreamingManager implements Listener<AudioSegment>
 
             AudioRecording audioRecording = new AudioRecording(path, broadcastChannels, identifierCollection,
                     audioSegment.getStartTimestamp(), length);
+            //Rod build: extra call details for the scanner (never stops the upload if something goes wrong)
+            audioRecording.setDetails(io.github.dsheirer.monitor.CallDetails.build(audioSegment, identifierCollection, length));
             mAudioRecordingListener.receive(audioRecording);
         }
         catch(IOException ioe)

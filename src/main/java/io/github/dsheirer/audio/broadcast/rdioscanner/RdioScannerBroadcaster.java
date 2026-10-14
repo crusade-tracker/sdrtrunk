@@ -277,7 +277,8 @@ public class RdioScannerBroadcaster extends AbstractAudioBroadcaster<RdioScanner
                             .addPart(FormField.PATCHES, patches)
                             .addPart(FormField.CHANNEL_NAME, channelName)
                             .addPart(FormField.SITE_NAME, siteName)
-                            .addPart(FormField.SOURCE_FULLY_QUALIFIED, sourceFullyQualified);
+                            .addPart(FormField.SOURCE_FULLY_QUALIFIED, sourceFullyQualified)
+                            .addPart(FormField.DETAILS, audioRecording.getDetails());
 
                         HttpRequest fileRequest = HttpRequest.newBuilder()
                             .uri(URI.create(getBroadcastConfiguration().getHost()))
