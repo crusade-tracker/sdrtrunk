@@ -71,7 +71,8 @@ jobs:
             BASETAG="$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )-$BDATE-$SLUG"
             TAG="$BASETAG"; N=1
             while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$BASETAG-$N"; done
-            TITLE="$WHO $BDATE - $NAME$([ $N -gt 1 ] && echo " ($N)")"
+            TITLE="$WHO $BDATE - $NAME"
+            if [ "$N" -gt 1 ]; then TITLE="$TITLE ($N)"; fi
             VERSION="${TAG#rod-}"; VERSION="${VERSION#sdrtrunk-}"
           fi
           {
