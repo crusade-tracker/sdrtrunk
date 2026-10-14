@@ -1059,6 +1059,42 @@ public class StatusReporter
                 Map<String,Object> request = parseValue(value);
                 return onFxThread(() -> importAliases(request));
             }
+            case "tuner_minmax":
+            {
+                //Same as typing Min / Max on SDR-Trunk's Tuners tab, but set exactly as given: that tab won't keep a
+                //range narrower than the sample rate (it moves Min down), which spoils narrow ranges from the planner.
+                DiscoveredTuner dt = findTuner(target);
+                Map<String,Object> v = parseValue(value);
+                long min, max;
+                try
+                {
+                    min = Long.parseLong(String.valueOf(v.get("min")));
+                    max = Long.parseLong(String.valueOf(v.get("max")));
+                }
+                catch(NumberFormatException nfe)
+                {
+                    throw new Exception("Min and Max must be frequencies in Hz");
+                }
+                if(min < 1_000_000 || max > 6_000_000_000L || min >= max)
+                {
+                    throw new Exception("Min must be below Max, both between 1 MHz and 6 GHz");
+                }
+                TunerConfiguration config = dt.getTunerConfiguration();
+                if(config == null)
+                {
+                    throw new Exception(dt.getId() + " has no saved settings yet - open it once on SDR-Trunk's Tuners tab");
+                }
+                long beforeMin = config.getMinimumFrequency(), beforeMax = config.getMaximumFrequency();
+                if(dt.hasTuner())
+                {
+                    dt.getTuner().getTunerController().setFrequencyExtents(min, max);
+                }
+                config.setMinimumFrequency(min);
+                config.setMaximumFrequency(max);
+                mTunerManager.saveConfigurations();
+                return dt.getId() + " Min/Max " + mhz(beforeMin) + "-" + mhz(beforeMax) + " -> " + mhz(min) + "-" + mhz(max) +
+                    " MHz (saved)" + (dt.hasTuner() ? "" : "; the tuner isn't running, so it applies when it starts");
+            }
             case "tuner_autoppm":
             {
                 DiscoveredTuner dt = findTuner(target);
@@ -1474,6 +1510,11 @@ public class StatusReporter
             mPlaylistManager.schedulePlaylistSave();
         }
         return added + " added, " + renamed + " renamed, " + streamed + " got a stream, " + same + " already the same";
+    }
+
+    private static String mhz(long hz)
+    {
+        return hz <= 0 ? "none" : String.format("%.4f", hz / 1e6);
     }
 
     private void startChannel(Channel channel) throws Exception

@@ -1387,7 +1387,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                     .channelDescriptor(apco25Channel)
-                    .details("CONTINUE - PHASE 1 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                    .details((isIgnoredDoNotMonitor(ic) ? ignoreText(ic) + " - " : "") +
+                        "CONTINUE - PHASE 1 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
                     .identifiers(ic)
                     .build();
 
@@ -1528,7 +1529,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 P25ChannelGrantEvent continuationGrantEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                     .channelDescriptor(apco25Channel)
-                    .details("CONTINUE - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                    .details((isIgnoredDoNotMonitor(ic) ? ignoreText(ic) + " - " : "") +
+                        "CONTINUE - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
                     .identifiers(ic)
                     .timeslot(apco25Channel.getTimeslot())
                     .build();
