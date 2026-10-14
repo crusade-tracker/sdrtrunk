@@ -134,6 +134,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          # GitHub orders releases by the date of the commit the tag points at. Pointing a branch build's tag at the commit
+          # it built (instead of this script's own commit) gives each build its own date, so the newest is listed first.
+          target_commitish: ${{ inputs.branch != '' && env.SHA || github.sha }}
           name: ${{ env.TITLE }}
           body_path: release-notes.md
           prerelease: true
