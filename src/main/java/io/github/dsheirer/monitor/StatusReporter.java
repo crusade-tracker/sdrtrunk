@@ -20,6 +20,9 @@
 package io.github.dsheirer.monitor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.xml.JacksonXmlModule;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import io.github.dsheirer.module.ProcessingChain;
 import io.github.dsheirer.alias.Alias;
 import io.github.dsheirer.alias.AliasList;
 import io.github.dsheirer.alias.AliasModel;
@@ -122,6 +125,10 @@ public class StatusReporter
     private final long mStartMillis = System.currentTimeMillis();
     private final String mInstance;
     private ScheduledExecutorService mExecutor;
+    //While someone has the scanner's SDR-Trunk page open, the scanner asks for a report every second instead of every 5
+    private volatile long mFastUntil = 0;
+    private static final int FAST_INTERVAL_SECONDS = 1;
+    private static final int MAX_EVENTS = 300;
     private String mLastProblem;
 
     public StatusReporter(TunerManager tunerManager, PlaylistManager playlistManager)
@@ -154,8 +161,25 @@ public class StatusReporter
             t.setDaemon(true);
             return t;
         });
-        mExecutor.scheduleWithFixedDelay(this::report, 10, INTERVAL_SECONDS, TimeUnit.SECONDS);
+        mExecutor.schedule(this::reportAndReschedule, 10, TimeUnit.SECONDS);
         mLog.info("Status reporter started - reports to the Rdio Scanner server " + STATUS_PATH);
+    }
+
+    private void reportAndReschedule()
+    {
+        try
+        {
+            report();
+        }
+        finally
+        {
+            ScheduledExecutorService executor = mExecutor;
+            if(executor != null && !executor.isShutdown())
+            {
+                executor.schedule(this::reportAndReschedule,
+                    System.currentTimeMillis() < mFastUntil ? FAST_INTERVAL_SECONDS : INTERVAL_SECONDS, TimeUnit.SECONDS);
+            }
+        }
     }
 
     public void stop()
@@ -183,6 +207,13 @@ public class StatusReporter
                 case EMERGENCY -> "emergency";
                 default -> null;
             };
+
+            //Calls this build skipped for Do Not Monitor arrive as normal call events with an IGNORED note
+            if(kind == null && event.getDetails() != null &&
+                event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_DO_NOT_MONITOR))
+            {
+                kind = "do_not_monitor";
+            }
 
             //The same event object is updated and re-sent while a call continues - count it once
             if(kind == null)
@@ -810,6 +841,10 @@ public class StatusReporter
         try
         {
             Map<String,Object> reply = mMapper.readValue(responseBody, Map.class);
+            if(Boolean.TRUE.equals(reply.get("fast")))
+            {
+                mFastUntil = System.currentTimeMillis() + 15000;
+            }
             Object list = reply.get("commands");
             if(!(list instanceof List<?>) || ((List<?>)list).isEmpty())
             {
@@ -845,6 +880,15 @@ public class StatusReporter
 
             try
             {
+                if(action.startsWith("query_"))
+                {
+                    //Read-only questions from the admin page: answered with data, not logged
+                    result.put("ok", true);
+                    result.put("message", "");
+                    result.put("data", runQuery(action, target));
+                    mResults.add(result);
+                    continue;
+                }
                 String message = runCommand(action, target, value);
                 result.put("ok", true);
                 result.put("message", message);
@@ -1022,6 +1066,93 @@ public class StatusReporter
             default:
                 throw new Exception("unknown command '" + action + "' - this SDR-Trunk build is older than the scanner");
         }
+    }
+
+    /**
+     * query_channel: the channel's settings exactly as SDR-Trunk saves them in the playlist (XML), plus its event history
+     * (newest first) - what the channel editor and the channel's Events tab show.
+     */
+    private Map<String,Object> runQuery(String action, String target) throws Exception
+    {
+        if(!"query_channel".equals(action))
+        {
+            throw new Exception("unknown query '" + action + "' - this SDR-Trunk build is older than the scanner");
+        }
+        Channel channel = findChannel(target);
+        Map<String,Object> data = new LinkedHashMap<>();
+        data.put("id", channel.getChannelID());
+        data.put("name", channel.getName());
+        data.put("processing", channel.isProcessing());
+
+        JacksonXmlModule xmlModule = new JacksonXmlModule();
+        xmlModule.setDefaultUseWrapper(false);
+        try
+        {
+            data.put("xml", new XmlMapper(xmlModule).writeValueAsString(channel));
+        }
+        catch(Exception e)
+        {
+            data.put("xmlError", e.getMessage());
+        }
+
+        List<Map<String,Object>> events = new ArrayList<>();
+        ProcessingChain chain = mChannelProcessingManager.getProcessingChain(channel);
+        if(chain != null && chain.getDecodeEventHistory() != null)
+        {
+            List<IDecodeEvent> items = List.of();
+            for(int attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    items = chain.getDecodeEventHistory().getItems();
+                    break;
+                }
+                catch(java.util.ConcurrentModificationException cme)
+                {
+                    //an event arrived while copying - try again
+                }
+            }
+            for(int i = items.size() - 1; i >= 0 && events.size() < MAX_EVENTS; i--)
+            {
+                IDecodeEvent ev = items.get(i);
+                if(ev == null)
+                {
+                    continue;
+                }
+                Map<String,Object> m = new LinkedHashMap<>();
+                m.put("t", ev.getTimeStart());
+                m.put("dur", ev.getDuration());
+                m.put("type", ev.getEventType() != null ? ev.getEventType().toString() : null);
+                IdentifierCollection ic = ev.getIdentifierCollection();
+                if(ic != null)
+                {
+                    Identifier from = ic.getFromIdentifier();
+                    if(from != null)
+                    {
+                        m.put("from", String.valueOf(from.getValue()));
+                        m.put("fromAlias", aliasName(ic, from));
+                    }
+                    Identifier to = ic.getToIdentifier();
+                    if(to != null)
+                    {
+                        m.put("to", String.valueOf(to.getValue()));
+                        m.put("toAlias", aliasName(ic, to));
+                    }
+                }
+                if(ev.getChannelDescriptor() != null)
+                {
+                    m.put("freq", ev.getChannelDescriptor().getDownlinkFrequency());
+                }
+                if(ev.hasTimeslot())
+                {
+                    m.put("ts", ev.getTimeslot());
+                }
+                m.put("details", ev.getDetails());
+                events.add(m);
+            }
+        }
+        data.put("events", events);
+        return data;
     }
 
     private void startChannel(Channel channel) throws Exception
