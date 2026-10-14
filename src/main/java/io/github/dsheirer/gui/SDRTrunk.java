@@ -237,8 +237,7 @@ public class SDRTrunk implements Listener<TunerEvent>
         mPlaylistManager.init();
 
         //Rod build: status reports (tuners, channels, problems) to the Rdio Scanner server's admin page
-        new io.github.dsheirer.monitor.StatusReporter(mTunerManager, mPlaylistManager.getChannelProcessingManager(),
-            mPlaylistManager.getBroadcastModel(), mPlaylistManager.getAliasModel()).start();
+        new io.github.dsheirer.monitor.StatusReporter(mTunerManager, mPlaylistManager).start();
 
         if(GraphicsEnvironment.isHeadless())
         {

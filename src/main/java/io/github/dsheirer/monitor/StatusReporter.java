@@ -30,12 +30,18 @@ import io.github.dsheirer.channel.metadata.ChannelMetadata;
 import io.github.dsheirer.channel.metadata.ChannelMetadataModel;
 import io.github.dsheirer.controller.channel.Channel;
 import io.github.dsheirer.controller.channel.ChannelEvent;
+import io.github.dsheirer.controller.channel.ChannelException;
+import io.github.dsheirer.controller.channel.ChannelModel;
 import io.github.dsheirer.controller.channel.ChannelProcessingManager;
 import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.module.decode.event.DecodeEventType;
 import io.github.dsheirer.module.decode.event.IDecodeEvent;
+import io.github.dsheirer.playlist.PlaylistManager;
 import io.github.dsheirer.properties.SystemProperties;
+import io.github.dsheirer.source.config.SourceConfigTuner;
+import io.github.dsheirer.source.config.SourceConfigTunerMultipleFrequency;
+import io.github.dsheirer.source.tuner.configuration.TunerConfiguration;
 import io.github.dsheirer.source.tuner.Tuner;
 import io.github.dsheirer.source.tuner.TunerController;
 import io.github.dsheirer.source.tuner.manager.DiscoveredTuner;
@@ -58,6 +64,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
@@ -74,6 +81,10 @@ import java.util.concurrent.TimeUnit;
  * Uses the first enabled Rdio Scanner streaming configuration: same server and API key as the call uploads, posted
  * to /api/sdrtrunk/status on that server. Outbound only - nothing listens here. If there is no Rdio Scanner
  * streaming configuration, or the server doesn't answer, nothing happens apart from an occasional log line.
+ *
+ * Remote control (stage 2): the server's reply to a report can carry commands queued by the admin - start, stop or
+ * restart a channel; enable, disable or restart a tuner; set a tuner's PPM. They are carried out here the same way
+ * SDR-Trunk's own buttons do them, and the result of each goes back with the next report.
  */
 public class StatusReporter
 {
@@ -86,6 +97,9 @@ public class StatusReporter
     private final ChannelProcessingManager mChannelProcessingManager;
     private final BroadcastModel mBroadcastModel;
     private final AliasModel mAliasModel;
+    private final ChannelModel mChannelModel;
+    private final ConcurrentLinkedQueue<Map<String,Object>> mResults = new ConcurrentLinkedQueue<>();
+    private final Set<String> mDoneCommands = Collections.synchronizedSet(new LinkedHashSet<>());
     private final ObjectMapper mMapper = new ObjectMapper();
     private final HttpClient mHttpClient = HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)   //no h2c upgrade - the scanner's main port treats upgrades as websockets
@@ -99,13 +113,13 @@ public class StatusReporter
     private ScheduledExecutorService mExecutor;
     private String mLastProblem;
 
-    public StatusReporter(TunerManager tunerManager, ChannelProcessingManager channelProcessingManager,
-                          BroadcastModel broadcastModel, AliasModel aliasModel)
+    public StatusReporter(TunerManager tunerManager, PlaylistManager playlistManager)
     {
         mTunerManager = tunerManager;
-        mChannelProcessingManager = channelProcessingManager;
-        mBroadcastModel = broadcastModel;
-        mAliasModel = aliasModel;
+        mChannelProcessingManager = playlistManager.getChannelProcessingManager();
+        mBroadcastModel = playlistManager.getBroadcastModel();
+        mAliasModel = playlistManager.getAliasModel();
+        mChannelModel = playlistManager.getChannelModel();
 
         String host;
         try
@@ -292,7 +306,15 @@ public class StatusReporter
             body.put("memMaxMB", rt.maxMemory() / 1048576);
             body.put("tuners", tuners(events));
             body.put("channels", channels());
+            body.put("configured", configuredChannels());
             body.put("events", events);
+            List<Map<String,Object>> results = new ArrayList<>();
+            Map<String,Object> r;
+            while((r = mResults.poll()) != null)
+            {
+                results.add(r);
+            }
+            body.put("results", results);
 
             HttpRequest request = HttpRequest.newBuilder(status)
                 .timeout(Duration.ofSeconds(10))
@@ -309,10 +331,12 @@ public class StatusReporter
                     mLog.info("Status reports reaching " + status + " again");
                     mLastProblem = null;
                 }
+                runCommands(response.body());
             }
             else
             {
                 requeue(events);
+                results.forEach(mResults::add);
                 problem("server answered " + response.statusCode() + " from " + status);
             }
         }
@@ -379,6 +403,7 @@ public class StatusReporter
             m.put("status", status != null ? status.name() : null);
             m.put("error", dt.hasErrorMessage() ? dt.getErrorMessage() : null);
             m.put("class", dt.getTunerClass() != null ? dt.getTunerClass().toString() : null);
+            m.put("enabled", dt.isEnabled());
 
             if(dt.hasTuner())
             {
@@ -393,6 +418,18 @@ public class StatusReporter
                     m.put("max", tc.getMaximumFrequency());
                     m.put("sampleRate", (long)tc.getSampleRate());
                     m.put("usable", tc.getUsableBandwidth());
+                    m.put("ppm", tc.getFrequencyCorrection());
+                    try
+                    {
+                        if(tc.getMeasuredFrequencyError() != 0)
+                        {
+                            m.put("ppmError", Math.round(tc.getPPMFrequencyError() * 10) / 10.0);
+                        }
+                    }
+                    catch(Exception ex)
+                    {
+                        //not measured
+                    }
                 }
                 if(tuner.getChannelSourceManager() != null)
                 {
@@ -457,6 +494,7 @@ public class StatusReporter
                 m.put("site", channel.getSite());
                 m.put("name", channel.getName());
                 m.put("traffic", channel.isTrafficChannel());
+                m.put("channelId", channel.getChannelID());
             }
             if(md.hasChannelConfigurationIdentifier())
             {
@@ -492,6 +530,279 @@ public class StatusReporter
         }
 
         return out;
+    }
+
+    /**
+     * Every channel in the playlist (not traffic channels), running or not, so the admin can start and stop them
+     */
+    private List<Map<String,Object>> configuredChannels()
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        List<Channel> channels;
+        try
+        {
+            channels = new ArrayList<>(mChannelModel.getChannels());
+        }
+        catch(Exception e)
+        {
+            return out;   //changed while copying - next report will have it
+        }
+
+        for(Channel c: channels)
+        {
+            Map<String,Object> m = new LinkedHashMap<>();
+            m.put("id", c.getChannelID());
+            m.put("name", c.getName());
+            m.put("system", c.getSystem());
+            m.put("site", c.getSite());
+            m.put("processing", c.isProcessing());
+            m.put("autoStart", c.isAutoStart());
+            if(c.getDecodeConfiguration() != null)
+            {
+                m.put("decoder", String.valueOf(c.getDecodeConfiguration().getDecoderType()));
+            }
+            if(c.getSourceConfiguration() instanceof SourceConfigTuner sct)
+            {
+                m.put("freqs", List.of(sct.getFrequency()));
+            }
+            else if(c.getSourceConfiguration() instanceof SourceConfigTunerMultipleFrequency sctm)
+            {
+                m.put("freqs", sctm.getFrequencies());
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- remote control
+
+    @SuppressWarnings("unchecked")
+    private void runCommands(String responseBody)
+    {
+        List<Map<String,Object>> commands;
+        try
+        {
+            Map<String,Object> reply = mMapper.readValue(responseBody, Map.class);
+            Object list = reply.get("commands");
+            if(!(list instanceof List<?>) || ((List<?>)list).isEmpty())
+            {
+                return;
+            }
+            commands = (List<Map<String,Object>>)list;
+        }
+        catch(Exception e)
+        {
+            return;   //an older scanner answers without commands
+        }
+
+        for(Map<String,Object> command: commands)
+        {
+            String id = String.valueOf(command.get("id"));
+            if(!mDoneCommands.add(id))
+            {
+                continue;   //already carried out
+            }
+            while(mDoneCommands.size() > 500)
+            {
+                synchronized(mDoneCommands)
+                {
+                    mDoneCommands.remove(mDoneCommands.iterator().next());
+                }
+            }
+
+            String action = String.valueOf(command.get("action"));
+            String target = String.valueOf(command.get("target"));
+            Object value = command.get("value");
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("id", command.get("id"));
+
+            try
+            {
+                String message = runCommand(action, target, value);
+                result.put("ok", true);
+                result.put("message", message);
+                mLog.info("Remote command [" + action + "] on [" + target + "]: " + message);
+            }
+            catch(Exception e)
+            {
+                result.put("ok", false);
+                result.put("message", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                mLog.info("Remote command [" + action + "] on [" + target + "] failed: " + result.get("message"));
+            }
+            mResults.add(result);
+        }
+    }
+
+    private String runCommand(String action, String target, Object value) throws Exception
+    {
+        //Tuner changes update Swing tables through their listeners - do them on the Swing thread like the Tuners tab does
+        if(action.startsWith("tuner_"))
+        {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            EventQueue.invokeLater(() -> {
+                try
+                {
+                    future.complete(runAction(action, target, value));
+                }
+                catch(Throwable t)
+                {
+                    future.completeExceptionally(t);
+                }
+            });
+            try
+            {
+                return future.get(30, TimeUnit.SECONDS);
+            }
+            catch(java.util.concurrent.ExecutionException ee)
+            {
+                throw ee.getCause() instanceof Exception ex ? ex : new Exception(ee.getCause());
+            }
+        }
+        return runAction(action, target, value);
+    }
+
+    private String runAction(String action, String target, Object value) throws Exception
+    {
+        switch(action)
+        {
+            case "channel_start":
+            {
+                Channel c = findChannel(target);
+                if(c.isProcessing())
+                {
+                    return c.getName() + " was already running";
+                }
+                startChannel(c);
+                return c.getName() + " started";
+            }
+            case "channel_stop":
+            {
+                Channel c = findChannel(target);
+                if(!c.isProcessing())
+                {
+                    return c.getName() + " was already stopped";
+                }
+                mChannelProcessingManager.stop(c);
+                return c.getName() + " stopped";
+            }
+            case "channel_restart":
+            {
+                Channel c = findChannel(target);
+                if(c.isProcessing())
+                {
+                    mChannelProcessingManager.stop(c);
+                    Thread.sleep(1000);   //let the tuner channel and decoder shut down first
+                }
+                startChannel(c);
+                return c.getName() + " restarted";
+            }
+            case "tuner_enable":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                if(dt.isEnabled())
+                {
+                    return dt.getId() + " was already enabled";
+                }
+                dt.setEnabled(true);
+                return dt.getId() + (dt.getTunerStatus() == TunerStatus.ERROR ? " enabled, but it reports an error: " +
+                    dt.getErrorMessage() : " enabled");
+            }
+            case "tuner_disable":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                if(!dt.isEnabled())
+                {
+                    return dt.getId() + " was already disabled";
+                }
+                dt.setEnabled(false);
+                return dt.getId() + " disabled - its channels move to other tuners if they can";
+            }
+            case "tuner_restart":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                if(dt.getTunerStatus() != TunerStatus.ERROR)
+                {
+                    return dt.getId() + " isn't in error - nothing to restart";
+                }
+                dt.restart();
+                if(dt.getTunerStatus() == TunerStatus.ERROR)
+                {
+                    throw new Exception("restart tried, still in error: " + dt.getErrorMessage());
+                }
+                return dt.getId() + " restarted - status " + dt.getTunerStatus();
+            }
+            case "tuner_ppm":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                double ppm;
+                try
+                {
+                    ppm = Double.parseDouble(String.valueOf(value));
+                }
+                catch(NumberFormatException nfe)
+                {
+                    throw new Exception("PPM must be a number");
+                }
+                if(ppm < -1000 || ppm > 1000)
+                {
+                    throw new Exception("PPM must be between -1000 and 1000");
+                }
+                if(!dt.hasTuner())
+                {
+                    throw new Exception(dt.getId() + " isn't running - enable it first");
+                }
+                ppm = Math.round(ppm * 10) / 10.0;
+                double before = dt.getTuner().getTunerController().getFrequencyCorrection();
+                dt.getTuner().getTunerController().setFrequencyCorrection(ppm);
+                TunerConfiguration config = dt.getTunerConfiguration();
+                if(config != null)
+                {
+                    config.setFrequencyCorrection(ppm);
+                    mTunerManager.saveConfigurations();
+                }
+                return dt.getId() + " PPM " + before + " -> " + ppm + (config != null ? " (saved)" : " (not saved - no tuner configuration)");
+            }
+            default:
+                throw new Exception("unknown command '" + action + "' - this SDR-Trunk build is older than the scanner");
+        }
+    }
+
+    private void startChannel(Channel channel) throws Exception
+    {
+        try
+        {
+            mChannelProcessingManager.start(channel);
+        }
+        catch(ChannelException ce)
+        {
+            throw new Exception(channel.getName() + " didn't start: " + ce.getMessage());
+        }
+    }
+
+    private Channel findChannel(String id) throws Exception
+    {
+        for(Channel c: new ArrayList<>(mChannelModel.getChannels()))
+        {
+            if(String.valueOf(c.getChannelID()).equals(id))
+            {
+                return c;
+            }
+        }
+        throw new Exception("channel " + id + " not found - was it deleted or renamed?");
+    }
+
+    private DiscoveredTuner findTuner(String id) throws Exception
+    {
+        DiscoveredTunerModel model = mTunerManager.getDiscoveredTunerModel();
+        for(int i = 0; i < model.getRowCount(); i++)
+        {
+            DiscoveredTuner dt = model.getDiscoveredTuner(i);
+            if(dt != null && dt.getId().equals(id))
+            {
+                return dt;
+            }
+        }
+        throw new Exception("tuner " + id + " not found - unplugged?");
     }
 
     private static String firstAlias(List<Alias> aliases)
