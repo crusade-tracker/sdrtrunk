@@ -419,6 +419,7 @@ public class StatusReporter
                     m.put("sampleRate", (long)tc.getSampleRate());
                     m.put("usable", tc.getUsableBandwidth());
                     m.put("ppm", tc.getFrequencyCorrection());
+                    m.put("ppmAuto", tc.getTunerFrequencyErrorManager() != null && tc.getTunerFrequencyErrorManager().isEnabled());
                     try
                     {
                         if(tc.getMeasuredFrequencyError() != 0)
@@ -750,6 +751,11 @@ public class StatusReporter
                 if(!dt.hasTuner())
                 {
                     throw new Exception(dt.getId() + " isn't running - enable it first");
+                }
+                if(dt.getTuner().getTunerController().getTunerFrequencyErrorManager() != null &&
+                    dt.getTuner().getTunerController().getTunerFrequencyErrorManager().isEnabled())
+                {
+                    throw new Exception(dt.getId() + " has Auto PPM on - it would overwrite a value set by hand");
                 }
                 ppm = Math.round(ppm * 10) / 10.0;
                 double before = dt.getTuner().getTunerController().getFrequencyCorrection();
