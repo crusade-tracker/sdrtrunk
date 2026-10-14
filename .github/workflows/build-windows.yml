@@ -1,5 +1,7 @@
 # Builds SDR-Trunk for Windows from any point in DSheirer/sdrtrunk's history, on GitHub's servers.
-# Each build is kept as its own release named build-<date>-<commit>, so older builds are never overwritten.
+# Each build is kept as its own release, so older builds are never overwritten.
+# Give it a name ("Remote control", "Auto PPM fix") and that is what the release, its tag, the zip and SDR-Trunk's
+# title bar show: "Rod build 2026-10-14 - Remote control". Leave the name empty for the old build-<date>-<commit> style.
 #
 # Run it: Actions tab -> "Build Windows (choose version)" -> Run workflow -> enter a version -> Run.
 #   latest       newest code on DSheirer/sdrtrunk
@@ -19,6 +21,10 @@ on:
         description: 'Or build a branch of this fork (leave empty for the original code)'
         required: false
         default: ''
+      name:
+        description: 'Name for this build, e.g. Remote control (optional)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -32,6 +38,8 @@ jobs:
         env:
           WANTED: ${{ inputs.version }}
           BRANCH: ${{ inputs.branch }}
+          NAME: ${{ inputs.name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git clone --filter=blob:none https://github.com/DSheirer/sdrtrunk.git src
           cd src
@@ -52,12 +60,28 @@ jobs:
           SHORT=$(git rev-parse --short=7 "$SHA")
           CDATE=$(git log -1 --format=%cd --date=format:%Y-%m-%d "$SHA")
           JAVA=$(grep -oP 'JavaLanguageVersion\.of\(\K[0-9]+' build.gradle | head -1)
+          TAG="build-$CDATE-$SHORT$SUFFIX"
+          TITLE="SDR-Trunk $CDATE ($SHORT)$SUFFIX"
+          VERSION="$CDATE-$SHORT$SUFFIX"
+          if [ -n "$NAME" ]; then
+            # Named build: date it was built + the name. A second build with the same name that day gets -2, -3...
+            BDATE=$(TZ=America/New_York date +%Y-%m-%d)
+            SLUG=$(echo "$NAME" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
+            WHO=$([ -n "$BRANCH" ] && echo "Rod build" || echo "SDR-Trunk")
+            BASETAG="$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )-$BDATE-$SLUG"
+            TAG="$BASETAG"; N=1
+            while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$BASETAG-$N"; done
+            TITLE="$WHO $BDATE - $NAME$([ $N -gt 1 ] && echo " ($N)")"
+            VERSION="${TAG#rod-}"; VERSION="${VERSION#sdrtrunk-}"
+          fi
           {
             echo "SHA=$SHA"
             echo "SHORT=$SHORT"
             echo "CDATE=$CDATE"
             echo "JAVA=${JAVA:-26}"
-            echo "TAG=build-$CDATE-$SHORT$SUFFIX"
+            echo "TAG=$TAG"
+            echo "TITLE=$TITLE"
+            echo "VERSION=$VERSION"
             echo "SUFFIX=$SUFFIX"
             echo "BASE=$(git merge-base "$SHA" origin/master | cut -c1-7)"
           } >> "$GITHUB_ENV"
@@ -72,12 +96,18 @@ jobs:
 
       - name: Build Windows release
         working-directory: src
-        run: ./gradlew runtimeZipWindows -PprojectVersion=${{ env.CDATE }}-${{ env.SHORT }}${{ env.SUFFIX }}
+        run: ./gradlew runtimeZipWindows -PprojectVersion=${{ env.VERSION }}
 
       - name: Write release notes
         working-directory: src
+        env:
+          NAME: ${{ inputs.name }}
         run: |
           {
+            if [ -n "$NAME" ]; then
+              echo "## $NAME"
+              echo
+            fi
             if [ -n "$SUFFIX" ]; then
               echo "SDR-Trunk built from branch **${{ inputs.branch }}** of this fork (commit ${SHORT}), based on DSheirer/sdrtrunk commit ${BASE}."
               echo
@@ -99,7 +129,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: SDR-Trunk ${{ env.CDATE }} (${{ env.SHORT }})${{ env.SUFFIX }}
+          name: ${{ env.TITLE }}
           body_path: release-notes.md
           prerelease: true
           files: src/build/image/*windows-x86_64*.zip
