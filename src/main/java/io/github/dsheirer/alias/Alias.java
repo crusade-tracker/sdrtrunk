@@ -19,6 +19,7 @@
 package io.github.dsheirer.alias;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 import io.github.dsheirer.alias.action.AliasAction;
@@ -64,6 +65,8 @@ public class Alias
     private BooleanProperty mRecordable = new SimpleBooleanProperty();
     private BooleanProperty mStreamable = new SimpleBooleanProperty();
     private BooleanProperty mOverlap = new SimpleBooleanProperty();
+    //Rod build: don't follow this talkgroup's channel grants at all (no tuner channel, no decoding). Independent of Listen.
+    private BooleanProperty mSkipDecode = new SimpleBooleanProperty();
     private IntegerProperty mColor = new SimpleIntegerProperty();
     private IntegerProperty mPriority = new SimpleIntegerProperty(Priority.DEFAULT_PRIORITY);
     private IntegerProperty mNonAudioIdentifierCount = new SimpleIntegerProperty();
@@ -119,6 +122,28 @@ public class Alias
      * Indicates if one or more of the identifiers for this alias overlap with identifiers from another alias
      * within the same alias list.
      */
+    @JsonIgnore
+    public BooleanProperty skipDecodeProperty()
+    {
+        return mSkipDecode;
+    }
+
+    /**
+     * Skip decode: P25 trunking doesn't follow channel grants to this talkgroup. Saved as skip_decode="true" on the
+     * alias only when set; stock SDR-Trunk ignores the attribute, so the playlist still opens there.
+     */
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    @JacksonXmlProperty(isAttribute = true, localName = "skip_decode")
+    public boolean isSkipDecode()
+    {
+        return mSkipDecode.get();
+    }
+
+    public void setSkipDecode(boolean skipDecode)
+    {
+        mSkipDecode.set(skipDecode);
+    }
+
     @JsonIgnore
     public BooleanProperty overlapProperty()
     {
@@ -735,6 +760,6 @@ public class Alias
         return (Alias a) -> new Observable[] {a.recordableProperty(), a.streamableProperty(), a.colorProperty(),
             a.aliasListNameProperty(), a.groupProperty(), a.iconNameProperty(), a.nameProperty(), a.aliasIds(),
             a.aliasActions(), a.nonAudioIdentifierCountProperty(), a.overlapProperty(), a.priorityProperty(),
-                a.streamTalkgroupAliasProperty()};
+                a.streamTalkgroupAliasProperty(), a.skipDecodeProperty()};
     }
 }

@@ -106,6 +106,7 @@ public class StatusReporter
     private final BroadcastModel mBroadcastModel;
     private final AliasModel mAliasModel;
     private final ChannelModel mChannelModel;
+    private final PlaylistManager mPlaylistManager;
     private final ConcurrentLinkedQueue<Map<String,Object>> mResults = new ConcurrentLinkedQueue<>();
     private final Set<String> mDoneCommands = Collections.synchronizedSet(new LinkedHashSet<>());
     //Talkgroups heard in calls that don't reach the scanner (no alias, or alias not streamed) - sent with each report
@@ -138,6 +139,7 @@ public class StatusReporter
         mBroadcastModel = playlistManager.getBroadcastModel();
         mAliasModel = playlistManager.getAliasModel();
         mChannelModel = playlistManager.getChannelModel();
+        mPlaylistManager = playlistManager;
 
         String host;
         try
@@ -210,7 +212,8 @@ public class StatusReporter
 
             //Calls this build skipped for Do Not Monitor arrive as normal call events with an IGNORED note
             if(kind == null && event.getDetails() != null &&
-                event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_DO_NOT_MONITOR))
+                (event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_DO_NOT_MONITOR) ||
+                 event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_SKIP_DECODE)))
             {
                 kind = "do_not_monitor";
             }
@@ -322,7 +325,7 @@ public class StatusReporter
             }
             for(Alias alias: aliases)
             {
-                if(alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)
+                if(alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR || alias.isSkipDecode())
                 {
                     return;
                 }
@@ -1046,6 +1049,16 @@ public class StatusReporter
                 }
                 return dt.getId() + " PPM " + before + " -> " + ppm + (config != null ? " (saved)" : " (not saved - no tuner configuration)");
             }
+            case "alias_set":
+            {
+                Map<String,Object> change = parseValue(value);
+                return onFxThread(() -> setAlias(target, change));
+            }
+            case "alias_import":
+            {
+                Map<String,Object> request = parseValue(value);
+                return onFxThread(() -> importAliases(request));
+            }
             case "tuner_autoppm":
             {
                 DiscoveredTuner dt = findTuner(target);
@@ -1074,6 +1087,10 @@ public class StatusReporter
      */
     private Map<String,Object> runQuery(String action, String target) throws Exception
     {
+        if("query_aliases".equals(action))
+        {
+            return onFxThread(this::readAliases);
+        }
         if(!"query_channel".equals(action))
         {
             throw new Exception("unknown query '" + action + "' - this SDR-Trunk build is older than the scanner");
@@ -1153,6 +1170,310 @@ public class StatusReporter
         }
         data.put("events", events);
         return data;
+    }
+
+    // ---------------------------------------------------------------- aliases
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> parseValue(Object value) throws Exception
+    {
+        if(value instanceof Map<?,?> m)
+        {
+            return (Map<String,Object>)m;
+        }
+        try
+        {
+            return mMapper.readValue(String.valueOf(value), Map.class);
+        }
+        catch(Exception e)
+        {
+            throw new Exception("bad command value: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Runs on the JavaFX thread (aliases are shown in the playlist editor, which must only be changed there) and waits.
+     */
+    private <T> T onFxThread(java.util.concurrent.Callable<T> work) throws Exception
+    {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        try
+        {
+            javafx.application.Platform.runLater(() -> {
+                try
+                {
+                    future.complete(work.call());
+                }
+                catch(Throwable t)
+                {
+                    future.completeExceptionally(t);
+                }
+            });
+        }
+        catch(IllegalStateException notStarted)
+        {
+            return work.call();   //no JavaFX (headless) - nothing to keep in step with
+        }
+        try
+        {
+            return future.get(30, TimeUnit.SECONDS);
+        }
+        catch(java.util.concurrent.ExecutionException ee)
+        {
+            throw ee.getCause() instanceof Exception ex ? ex : new Exception(ee.getCause());
+        }
+    }
+
+    /**
+     * Identifies an alias for the admin: list, name and identifiers. Aliases have no id of their own, so a command
+     * carries this back and finds the alias again - if it was renamed or changed in the meantime it isn't found.
+     */
+    private static String aliasKey(Alias alias)
+    {
+        List<String> ids = new ArrayList<>();
+        for(io.github.dsheirer.alias.id.AliasID id: alias.getAliasIdentifiers())
+        {
+            if(id != null && !(id instanceof io.github.dsheirer.alias.id.broadcast.BroadcastChannel) &&
+                !(id instanceof Priority) && !(id instanceof io.github.dsheirer.alias.id.record.Record))
+            {
+                ids.add(id.toString());
+            }
+        }
+        Collections.sort(ids);
+        return alias.getAliasListName() + "\u0001" + alias.getName() + "\u0001" + String.join(",", ids);
+    }
+
+    private Map<String,Object> readAliases()
+    {
+        Map<String,Object> data = new LinkedHashMap<>();
+        List<Map<String,Object>> streams = new ArrayList<>();
+        for(BroadcastConfiguration config: new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()))
+        {
+            Map<String,Object> st = new LinkedHashMap<>();
+            st.put("name", config.getName());
+            st.put("type", config.getBroadcastServerType() != null ? config.getBroadcastServerType().toString() : null);
+            st.put("enabled", config.isEnabled());
+            st.put("rdio", config instanceof RdioScannerConfiguration);
+            streams.add(st);
+        }
+        data.put("streams", streams);
+        data.put("lists", new ArrayList<>(mAliasModel.getListNames()));
+
+        List<Map<String,Object>> aliases = new ArrayList<>();
+        for(Alias alias: new ArrayList<>(mAliasModel.getAliases()))
+        {
+            Map<String,Object> a = new LinkedHashMap<>();
+            a.put("key", aliasKey(alias));
+            a.put("list", alias.getAliasListName());
+            a.put("name", alias.getName());
+            a.put("group", alias.getGroup());
+            List<Integer> tgs = new ArrayList<>();
+            List<String> other = new ArrayList<>();
+            List<String> streamNames = new ArrayList<>();
+            for(io.github.dsheirer.alias.id.AliasID id: alias.getAliasIdentifiers())
+            {
+                if(id instanceof io.github.dsheirer.alias.id.talkgroup.Talkgroup tg)
+                {
+                    tgs.add(tg.getValue());
+                }
+                else if(id instanceof io.github.dsheirer.alias.id.broadcast.BroadcastChannel bc)
+                {
+                    streamNames.add(bc.getChannelName());
+                }
+                else if(id != null && !(id instanceof Priority) && !(id instanceof io.github.dsheirer.alias.id.record.Record))
+                {
+                    other.add(id.toString());
+                }
+            }
+            a.put("tgs", tgs);
+            a.put("ids", other);
+            a.put("listen", alias.getPlaybackPriority() != Priority.DO_NOT_MONITOR);
+            a.put("priority", alias.getPlaybackPriority());
+            a.put("record", alias.isRecordable());
+            a.put("streams", streamNames);
+            a.put("skip", alias.isSkipDecode());
+            aliases.add(a);
+        }
+        data.put("aliases", aliases);
+        return data;
+    }
+
+    private Alias findAlias(String key) throws Exception
+    {
+        for(Alias alias: new ArrayList<>(mAliasModel.getAliases()))
+        {
+            if(aliasKey(alias).equals(key))
+            {
+                return alias;
+            }
+        }
+        throw new Exception("alias not found - it was changed or deleted in SDR-Trunk since the list was read; reload it");
+    }
+
+    private String setAlias(String key, Map<String,Object> change) throws Exception
+    {
+        Alias alias = findAlias(key);
+        List<String> done = new ArrayList<>();
+        if(change.get("listen") instanceof Boolean listen)
+        {
+            alias.setCallPriority(listen ? Priority.DEFAULT_PRIORITY : Priority.DO_NOT_MONITOR);
+            done.add("Listen " + (listen ? "on" : "off"));
+        }
+        if(change.get("record") instanceof Boolean record)
+        {
+            alias.setRecordable(record);
+            done.add("Record " + (record ? "on" : "off"));
+        }
+        if(change.get("skip") instanceof Boolean skip)
+        {
+            alias.setSkipDecode(skip);
+            done.add("Skip decode " + (skip ? "on" : "off"));
+        }
+        if(change.get("stream") instanceof String stream && change.get("on") instanceof Boolean on)
+        {
+            boolean known = new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()).stream()
+                .anyMatch(c -> stream.equals(c.getName()));
+            if(!known)
+            {
+                throw new Exception("there's no stream called '" + stream + "' in SDR-Trunk");
+            }
+            if(on && !alias.hasBroadcastChannel(stream))
+            {
+                alias.addAliasID(new io.github.dsheirer.alias.id.broadcast.BroadcastChannel(stream));
+            }
+            else if(!on)
+            {
+                alias.removeBroadcastChannel(stream);
+            }
+            done.add("stream " + stream + " " + (on ? "on" : "off"));
+        }
+        if(done.isEmpty())
+        {
+            throw new Exception("nothing to change");
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        return alias.getName() + ": " + String.join(", ", done) + " (saved)";
+    }
+
+    /**
+     * Data Cleaner "Send to SDR-Trunk" through the running SDR-Trunk: same rules as the file write - new talkgroups get
+     * an alias, existing ones can be renamed / regrouped, and the chosen streams are added. Nothing is removed.
+     */
+    @SuppressWarnings("unchecked")
+    private String importAliases(Map<String,Object> request) throws Exception
+    {
+        String list = String.valueOf(request.getOrDefault("list", "")).trim();
+        if(list.isEmpty())
+        {
+            throw new Exception("no alias list given");
+        }
+        boolean rename = !Boolean.FALSE.equals(request.get("rename"));
+        List<String> streams = new ArrayList<>();
+        if(request.get("streams") instanceof List<?> ls)
+        {
+            Set<String> known = new java.util.HashSet<>();
+            new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()).forEach(c -> known.add(c.getName()));
+            ls.forEach(o -> { if(known.contains(String.valueOf(o))) streams.add(String.valueOf(o)); });
+        }
+
+        Map<Integer,Alias> byTg = new HashMap<>();
+        for(Alias alias: new ArrayList<>(mAliasModel.getAliases()))
+        {
+            if(list.equals(alias.getAliasListName()))
+            {
+                for(io.github.dsheirer.alias.id.AliasID id: alias.getAliasIdentifiers())
+                {
+                    if(id instanceof io.github.dsheirer.alias.id.talkgroup.Talkgroup tg)
+                    {
+                        byTg.putIfAbsent(tg.getValue(), alias);
+                    }
+                }
+            }
+        }
+
+        int added = 0, renamed = 0, streamed = 0, same = 0;
+        List<Alias> newAliases = new ArrayList<>();
+        Set<Integer> seen = new java.util.HashSet<>();
+        for(Object o: (List<Object>)request.getOrDefault("talkgroups", List.of()))
+        {
+            if(!(o instanceof Map<?,?> t))
+            {
+                continue;
+            }
+            int id;
+            try
+            {
+                id = Integer.parseInt(String.valueOf(t.get("id")).trim());
+            }
+            catch(NumberFormatException nfe)
+            {
+                continue;
+            }
+            if(!seen.add(id))
+            {
+                continue;
+            }
+            String label = t.get("label") != null ? String.valueOf(t.get("label")).trim() : "";
+            if(label.isEmpty())
+            {
+                label = "TG " + id;
+            }
+            label = label.length() > 64 ? label.substring(0, 64) : label;
+            String group = t.get("group") != null ? String.valueOf(t.get("group")).trim() : "";
+            group = group.length() > 64 ? group.substring(0, 64) : group;
+
+            Alias alias = byTg.get(id);
+            if(alias == null)
+            {
+                Alias a = new Alias(label);
+                a.setAliasListName(list);
+                a.setGroup(group);
+                a.setColor(0);
+                a.addAliasID(new io.github.dsheirer.alias.id.talkgroup.Talkgroup(io.github.dsheirer.protocol.Protocol.APCO25, id));
+                streams.forEach(n -> a.addAliasID(new io.github.dsheirer.alias.id.broadcast.BroadcastChannel(n)));
+                newAliases.add(a);
+                byTg.put(id, a);
+                added++;
+                continue;
+            }
+            boolean changed = false;
+            String oldGroup = alias.getGroup() != null ? alias.getGroup().trim() : "";
+            if(rename && (!label.equals(alias.getName() != null ? alias.getName().trim() : "") || !group.equals(oldGroup)))
+            {
+                alias.setName(label);
+                alias.setGroup(group);
+                renamed++;
+                changed = true;
+            }
+            boolean gotStream = false;
+            for(String n: streams)
+            {
+                if(!alias.hasBroadcastChannel(n))
+                {
+                    alias.addAliasID(new io.github.dsheirer.alias.id.broadcast.BroadcastChannel(n));
+                    gotStream = true;
+                }
+            }
+            if(gotStream)
+            {
+                streamed++;
+                changed = true;
+            }
+            if(!changed)
+            {
+                same++;
+            }
+        }
+        if(!newAliases.isEmpty())
+        {
+            mAliasModel.addAliasList(list);
+            mAliasModel.addAliases(newAliases);
+        }
+        if(added + renamed + streamed > 0)
+        {
+            mPlaylistManager.schedulePlaylistSave();
+        }
+        return added + " added, " + renamed + " renamed, " + streamed + " got a stream, " + same + " already the same";
     }
 
     private void startChannel(Channel channel) throws Exception

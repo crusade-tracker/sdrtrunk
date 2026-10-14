@@ -136,6 +136,7 @@ public class AliasItemEditor extends Editor<Alias>
     private ToggleSwitch mMonitorAudioToggleSwitch;
     private ComboBox<Integer> mMonitorPriorityComboBox;
     private ToggleSwitch mRecordAudioToggleSwitch;
+    private ToggleSwitch mSkipDecodeToggleSwitch;
     private ColorPicker mColorPicker;
     private ComboBox<Icon> mIconNodeComboBox;
     private SuggestionProvider<String> mGroupSuggestionProvider;
@@ -233,6 +234,7 @@ public class AliasItemEditor extends Editor<Alias>
         getGroupField().setDisable(disable);
         getNameField().setDisable(disable);
         getRecordAudioToggleSwitch().setDisable(disable);
+        getSkipDecodeToggleSwitch().setDisable(disable);
         getColorPicker().setDisable(disable);
         getMonitorAudioToggleSwitch().setDisable(disable);
         getIconNodeComboBox().setDisable(disable);
@@ -252,6 +254,7 @@ public class AliasItemEditor extends Editor<Alias>
             getGroupField().setText(alias.getGroup());
             getNameField().setText(alias.getName());
             getRecordAudioToggleSwitch().setSelected(alias.isRecordable());
+            getSkipDecodeToggleSwitch().setSelected(alias.isSkipDecode());
 
             Icon icon = null;
             String iconName = alias.getIconName();
@@ -318,6 +321,7 @@ public class AliasItemEditor extends Editor<Alias>
             getGroupField().setText(null);
             getNameField().setText(null);
             getRecordAudioToggleSwitch().setSelected(false);
+            getSkipDecodeToggleSwitch().setSelected(false);
             getColorPicker().setValue(Color.BLACK);
             getMonitorPriorityComboBox().getSelectionModel().select(null);
             getMonitorAudioToggleSwitch().setSelected(false);
@@ -336,6 +340,7 @@ public class AliasItemEditor extends Editor<Alias>
             if(alias != null)
             {
                 alias.setRecordable(getRecordAudioToggleSwitch().isSelected());
+                alias.setSkipDecode(getSkipDecodeToggleSwitch().isSelected());
                 alias.setColor(ColorUtil.toInteger(getColorPicker().getValue()));
 
                 Icon icon = getIconNodeComboBox().getSelectionModel().getSelectedItem();
@@ -1086,6 +1091,16 @@ public class AliasItemEditor extends Editor<Alias>
             mTextFieldPane.getChildren().add(iconLabel);
             GridPane.setConstraints(getIconNodeComboBox(), 5, row, 3, 1);
             mTextFieldPane.getChildren().add(getIconNodeComboBox());
+
+            Label skipDecodeLabel = new Label("Skip Decode");
+            GridPane.setHalignment(skipDecodeLabel, HPos.RIGHT);
+            GridPane.setConstraints(skipDecodeLabel, 2, ++row);
+            mTextFieldPane.getChildren().add(skipDecodeLabel);
+            GridPane.setConstraints(getSkipDecodeToggleSwitch(), 3, row);
+            mTextFieldPane.getChildren().add(getSkipDecodeToggleSwitch());
+            Label skipDecodeHint = new Label("P25: don't follow calls to this talkgroup (no tuner, no decoding)");
+            GridPane.setConstraints(skipDecodeHint, 4, row, 4, 1);
+            mTextFieldPane.getChildren().add(skipDecodeHint);
         }
 
         return mTextFieldPane;
@@ -1122,6 +1137,21 @@ public class AliasItemEditor extends Editor<Alias>
         }
 
         return mMonitorPriorityComboBox;
+    }
+
+    private ToggleSwitch getSkipDecodeToggleSwitch()
+    {
+        if(mSkipDecodeToggleSwitch == null)
+        {
+            mSkipDecodeToggleSwitch = new ToggleSwitch();
+            mSkipDecodeToggleSwitch.setDisable(true);
+            mSkipDecodeToggleSwitch.setTooltip(new javafx.scene.control.Tooltip(
+                "Rod build: P25 trunking won't follow channel grants to this talkgroup - no tuner channel, no decoding. Listen is unaffected."));
+            mSkipDecodeToggleSwitch.selectedProperty()
+                .addListener((observable, oldValue, newValue) -> modifiedProperty().set(true));
+        }
+
+        return mSkipDecodeToggleSwitch;
     }
 
     private ToggleSwitch getRecordAudioToggleSwitch()

@@ -112,6 +112,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     public static final String CHANNEL_START_REJECTED = "CHANNEL START REJECTED";
     public static final String MAX_TRAFFIC_CHANNELS_EXCEEDED = "MAX TRAFFIC CHANNELS EXCEEDED";
     public static final String IGNORED_DO_NOT_MONITOR = "IGNORED: DO NOT MONITOR";
+    public static final String IGNORED_SKIP_DECODE = "IGNORED: SKIP DECODE";
 
     private Queue<Channel> mAvailablePhase1TrafficChannelQueue = new LinkedTransferQueue<>();
     private Queue<Channel> mAvailablePhase2TrafficChannelQueue = new LinkedTransferQueue<>();
@@ -1177,7 +1178,35 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
      */
     private boolean isIgnoredDoNotMonitor(IdentifierCollection ic)
     {
-        if(!mIgnoreDoNotMonitor || mAliasList == null || ic == null)
+        return ignoreText(ic) != null;
+    }
+
+    /**
+     * Why the call isn't followed, for the event's details: IGNORED_SKIP_DECODE when a talkgroup involved is set to
+     * Skip Decode on its alias, otherwise IGNORED_DO_NOT_MONITOR. Null when the call is followed as normal.
+     */
+    private String ignoreText(IdentifierCollection ic)
+    {
+        if(!isIgnored(ic))
+        {
+            return null;
+        }
+        Identifier to = ic.getToIdentifier();
+        if(to instanceof PatchGroupIdentifier pgi && pgi.getValue() != null)
+        {
+            List<TalkgroupIdentifier> members = pgi.getValue().getPatchedTalkgroupIdentifiers();
+            if(members != null && members.stream().anyMatch(this::isSkipDecode))
+            {
+                return IGNORED_SKIP_DECODE;
+            }
+            return isSkipDecode(pgi.getValue().getPatchGroup()) ? IGNORED_SKIP_DECODE : IGNORED_DO_NOT_MONITOR;
+        }
+        return isSkipDecode(to) ? IGNORED_SKIP_DECODE : IGNORED_DO_NOT_MONITOR;
+    }
+
+    private boolean isIgnored(IdentifierCollection ic)
+    {
+        if(mAliasList == null || ic == null)
         {
             return false;
         }
@@ -1233,7 +1262,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     }
 
     /**
-     * Indicates if the talkgroup has an alias with the Do Not Monitor audio priority.
+     * Indicates if calls to the talkgroup aren't followed: its alias has Skip Decode on, or (when the decoder is set to
+     * ignore Do Not Monitor calls) its alias has the Do Not Monitor audio priority (Listen off).
      * @param talkgroup to check
      * @return true if aliased as Do Not Monitor, false if not aliased or aliased with any other priority
      */
@@ -1246,7 +1276,29 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
         for(Alias alias: mAliasList.getAliases(talkgroup))
         {
-            if(alias != null && alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)
+            if(alias != null && (alias.isSkipDecode() ||
+                (mIgnoreDoNotMonitor && alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Indicates if the talkgroup's alias has the Skip Decode switch on (Rod build).
+     */
+    private boolean isSkipDecode(Identifier talkgroup)
+    {
+        if(talkgroup == null || mAliasList == null)
+        {
+            return false;
+        }
+
+        for(Alias alias: mAliasList.getAliases(talkgroup))
+        {
+            if(alias != null && alias.isSkipDecode())
             {
                 return true;
             }
@@ -1403,7 +1455,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         {
             P25ChannelGrantEvent ignoredEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                     .channelDescriptor(apco25Channel)
-                    .details(IGNORED_DO_NOT_MONITOR + " - PHASE 1 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                    .details(ignoreText(ic) + " - PHASE 1 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
                     .identifiers(ic)
                     .build();
             tracker = new P25ChannelEventTracker(ignoredEvent);
@@ -1532,7 +1584,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         {
             P25ChannelGrantEvent ignoredEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                 .channelDescriptor(apco25Channel)
-                .details(IGNORED_DO_NOT_MONITOR + " - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                .details(ignoreText(ic) + " - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
                 .identifiers(ic)
                 .timeslot(apco25Channel.getTimeslot())
                 .build();
