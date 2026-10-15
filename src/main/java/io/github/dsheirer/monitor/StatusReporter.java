@@ -823,6 +823,7 @@ public class StatusReporter
             m.put("site", c.getSite());
             m.put("processing", c.isProcessing());
             m.put("autoStart", c.isAutoStart());
+            m.put("aliasList", c.getAliasListName());   //the scanner hides alias lists no channel uses
             if(c.getDecodeConfiguration() != null)
             {
                 m.put("decoder", String.valueOf(c.getDecodeConfiguration().getDecoderType()));
