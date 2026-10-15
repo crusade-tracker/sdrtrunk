@@ -483,6 +483,14 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
+            try
+            {
+                body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
+            }
+            catch(Exception e)
+            {
+                //changed while reading - next report
+            }
             List<Map<String,Object>> unstreamed = new ArrayList<>();
             for(String k: new ArrayList<>(mUnstreamed.keySet()))
             {
@@ -661,6 +669,86 @@ public class StatusReporter
         return future.get(3, TimeUnit.SECONDS);
     }
 
+    // ---------------------------------------------------------------- decode rate
+
+    /**
+     * Rod build: share of control channel messages (P25 Phase 1 TSBKs) that decode cleanly, over the last 5 minutes.
+     * SDR-Trunk passes on every TSBK, good or bad (bad = failed its CRC), so good / all is the decode rate. A falling
+     * rate is the early sign of a weak signal, a drifting dongle or a site going bad. Read on the Swing thread
+     * (readChannels); the counters are filled by the decoder thread.
+     */
+    private static class DecodeCounter implements io.github.dsheirer.sample.Listener<io.github.dsheirer.message.IMessage>
+    {
+        final java.util.concurrent.atomic.AtomicLong good = new java.util.concurrent.atomic.AtomicLong();
+        final java.util.concurrent.atomic.AtomicLong all = new java.util.concurrent.atomic.AtomicLong();
+        final java.util.ArrayDeque<long[]> snapshots = new java.util.ArrayDeque<>();   //{time, good, all}
+        final long started = System.currentTimeMillis();
+
+        @Override
+        public void receive(io.github.dsheirer.message.IMessage message)
+        {
+            if(message instanceof io.github.dsheirer.module.decode.p25.phase1.message.tsbk.TSBKMessage)
+            {
+                all.incrementAndGet();
+                if(message.isValid())
+                {
+                    good.incrementAndGet();
+                }
+            }
+        }
+    }
+
+    private static final long DECODE_WINDOW_MS = 5 * 60 * 1000;
+    private final Map<ProcessingChain,DecodeCounter> mDecodeCounters = new WeakHashMap<>();
+
+    private void decodeRate(Channel channel, Map<String,Object> m)
+    {
+        try
+        {
+            if(channel.getDecodeConfiguration() == null ||
+                channel.getDecodeConfiguration().getDecoderType() != io.github.dsheirer.module.decode.DecoderType.P25_PHASE1)
+            {
+                return;
+            }
+            ProcessingChain chain = mChannelProcessingManager.getProcessingChain(channel);
+            if(chain == null)
+            {
+                return;
+            }
+            DecodeCounter counter = mDecodeCounters.get(chain);
+            if(counter == null)
+            {
+                counter = new DecodeCounter();
+                mDecodeCounters.put(chain, counter);
+                chain.addMessageListener(counter);
+            }
+            long now = System.currentTimeMillis();
+            long good = counter.good.get(), all = counter.all.get();
+            counter.snapshots.addLast(new long[]{now, good, all});
+            while(counter.snapshots.size() > 1 && now - counter.snapshots.peekFirst()[0] > DECODE_WINDOW_MS)
+            {
+                counter.snapshots.pollFirst();
+            }
+            long[] first = counter.snapshots.peekFirst();
+            long spanMs = now - first[0];
+            long dAll = all - first[2], dGood = good - first[1];
+            if(spanMs < 30_000)
+            {
+                return;   //just started counting - not enough yet to say
+            }
+            m.put("decodeWindowSec", spanMs / 1000);
+            m.put("decodeMsgs", dAll);
+            if(dAll > 0)
+            {
+                m.put("decodeRate", Math.round(dGood * 1000.0 / dAll) / 10.0);
+            }
+        }
+        catch(Exception e)
+        {
+            //never let this get in the way of the report
+        }
+    }
+
     private List<Map<String,Object>> readChannels()
     {
         List<Map<String,Object>> out = new ArrayList<>();
@@ -683,6 +771,10 @@ public class StatusReporter
                 m.put("name", channel.getName());
                 m.put("traffic", channel.isTrafficChannel());
                 m.put("channelId", channel.getChannelID());
+                if(!channel.isTrafficChannel())
+                {
+                    decodeRate(channel, m);
+                }
             }
             if(md.hasChannelConfigurationIdentifier())
             {
@@ -823,18 +915,33 @@ public class StatusReporter
             m.put("site", c.getSite());
             m.put("processing", c.isProcessing());
             m.put("autoStart", c.isAutoStart());
-            m.put("aliasList", c.getAliasListName());   //the scanner hides alias lists no channel uses
+            m.put("aliasList", c.getAliasListName());
+            m.put("autoStartOrder", c.getAutoStartOrder());
             if(c.getDecodeConfiguration() != null)
             {
                 m.put("decoder", String.valueOf(c.getDecodeConfiguration().getDecoderType()));
+                //for the scanner's channel Edit form
+                if(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 p25)
+                {
+                    m.put("poolSize", p25.getTrafficChannelPoolSize());
+                    m.put("ignoreDataCalls", p25.getIgnoreDataCalls());
+                }
+                if(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1)
+                {
+                    m.put("modulation", p1.getModulation() == io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK ? "LSM" : "C4FM");
+                }
             }
             if(c.getSourceConfiguration() instanceof SourceConfigTuner sct)
             {
                 m.put("freqs", List.of(sct.getFrequency()));
+                m.put("preferredTuner", sct.getPreferredTuner());
+                m.put("source", "tuner");
             }
             else if(c.getSourceConfiguration() instanceof SourceConfigTunerMultipleFrequency sctm)
             {
                 m.put("freqs", sctm.getFrequencies());
+                m.put("preferredTuner", sctm.getPreferredTuner());
+                m.put("source", "tuner");
             }
             out.add(m);
         }
@@ -1054,6 +1161,11 @@ public class StatusReporter
                     mTunerManager.saveConfigurations();
                 }
                 return dt.getId() + " PPM " + before + " -> " + ppm + (config != null ? " (saved)" : " (not saved - no tuner configuration)");
+            }
+            case "channel_edit":
+            {
+                Map<String,Object> change = parseValue(value);
+                return onFxThread(() -> editChannel(target, change));
             }
             case "alias_set":
             {
@@ -1516,6 +1628,165 @@ public class StatusReporter
             mPlaylistManager.schedulePlaylistSave();
         }
         return added + " added, " + renamed + " renamed, " + streamed + " got a stream, " + same + " already the same";
+    }
+
+    /**
+     * Rod build: changes a playlist channel's settings from the scanner's admin page (channel details -> Edit) and
+     * saves the playlist. Only the keys present are changed. A running channel keeps its old settings until it is
+     * restarted - the admin page offers that.
+     */
+    private String editChannel(String target, Map<String,Object> change) throws Exception
+    {
+        Channel c = findChannel(target);
+        List<String> done = new ArrayList<>();
+
+        if(change.containsKey("name"))
+        {
+            String v = str(change.get("name"));
+            if(v.isEmpty())
+            {
+                throw new Exception("the channel needs a name");
+            }
+            c.setName(v);
+            done.add("name");
+        }
+        if(change.containsKey("system"))
+        {
+            c.setSystem(str(change.get("system")));
+            done.add("system");
+        }
+        if(change.containsKey("site"))
+        {
+            c.setSite(str(change.get("site")));
+            done.add("site");
+        }
+        if(change.containsKey("aliasList"))
+        {
+            String v = str(change.get("aliasList"));
+            if(!v.isEmpty() && !mAliasModel.getListNames().contains(v))
+            {
+                throw new Exception("there is no alias list called \"" + v + "\"");
+            }
+            c.setAliasListName(v.isEmpty() ? null : v);
+            done.add("alias list");
+        }
+        if(change.containsKey("autoStart"))
+        {
+            c.setAutoStart(Boolean.TRUE.equals(change.get("autoStart")));
+            done.add("auto-start");
+        }
+        if(change.containsKey("autoStartOrder"))
+        {
+            Object o = change.get("autoStartOrder");
+            c.setAutoStartOrder(o == null || str(o).isEmpty() ? null : Integer.parseInt(str(o)));
+            done.add("auto-start order");
+        }
+
+        if(change.containsKey("freqs") || change.containsKey("preferredTuner"))
+        {
+            io.github.dsheirer.source.config.SourceConfiguration sc = c.getSourceConfiguration();
+            String tuner = change.containsKey("preferredTuner") ? str(change.get("preferredTuner")) : null;
+            if(change.containsKey("freqs"))
+            {
+                List<Long> freqs = new ArrayList<>();
+                for(Object o: (List<Object>)change.get("freqs"))
+                {
+                    long f = Long.parseLong(str(o));
+                    if(f < 1_000_000L || f > 6_000_000_000L)
+                    {
+                        throw new Exception(f + " isn't a frequency in Hz");
+                    }
+                    freqs.add(f);
+                }
+                if(freqs.isEmpty())
+                {
+                    throw new Exception("the channel needs at least one frequency");
+                }
+                if(sc instanceof SourceConfigTunerMultipleFrequency multi)
+                {
+                    multi.setFrequencies(freqs);
+                }
+                else if(sc instanceof SourceConfigTuner single && freqs.size() == 1)
+                {
+                    single.setFrequency(freqs.get(0));
+                }
+                else if(sc instanceof SourceConfigTuner single)
+                {
+                    SourceConfigTunerMultipleFrequency multi = new SourceConfigTunerMultipleFrequency();
+                    multi.setPreferredTuner(single.getPreferredTuner());
+                    multi.setFrequencies(freqs);
+                    sc = multi;
+                }
+                else
+                {
+                    throw new Exception("this channel's source isn't a tuner - frequencies can't be set from here");
+                }
+                done.add("frequencies");
+            }
+            if(tuner != null)
+            {
+                String t = tuner.isEmpty() ? null : tuner;
+                if(sc instanceof SourceConfigTunerMultipleFrequency multi)
+                {
+                    multi.setPreferredTuner(t);
+                }
+                else if(sc instanceof SourceConfigTuner single)
+                {
+                    single.setPreferredTuner(t);
+                }
+                done.add("preferred tuner");
+            }
+            c.setSourceConfiguration(sc);
+        }
+
+        if(change.containsKey("modulation") || change.containsKey("poolSize") || change.containsKey("ignoreDataCalls"))
+        {
+            io.github.dsheirer.module.decode.config.DecodeConfiguration dc = c.getDecodeConfiguration();
+            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 p25))
+            {
+                throw new Exception("modulation, traffic channels and data calls are P25 settings - this channel isn't P25");
+            }
+            if(change.containsKey("modulation"))
+            {
+                if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1))
+                {
+                    throw new Exception("modulation is a P25 Phase 1 setting");
+                }
+                String mod = str(change.get("modulation")).toUpperCase();
+                p1.setModulation(mod.equals("LSM") || mod.equals("CQPSK") ? io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK
+                    : io.github.dsheirer.module.decode.p25.phase1.Modulation.C4FM);
+                done.add("modulation");
+            }
+            if(change.containsKey("poolSize"))
+            {
+                int n = Integer.parseInt(str(change.get("poolSize")));
+                if(n < 0 || n > 50)
+                {
+                    throw new Exception("traffic channels must be 0 to 50");
+                }
+                p25.setTrafficChannelPoolSize(n);
+                done.add("traffic channels");
+            }
+            if(change.containsKey("ignoreDataCalls"))
+            {
+                p25.setIgnoreDataCalls(Boolean.TRUE.equals(change.get("ignoreDataCalls")));
+                done.add("data calls");
+            }
+            c.setDecodeConfiguration(dc);
+        }
+
+        if(done.isEmpty())
+        {
+            return c.getName() + ": nothing to change";
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        return c.getName() + ": changed " + String.join(", ", done) + " (saved)" +
+            (c.isProcessing() ? " - restart the channel to use the new settings" : "");
+    }
+
+    private static String str(Object o)
+    {
+        return o == null ? "" : String.valueOf(o).trim();
     }
 
     private static String mhz(long hz)

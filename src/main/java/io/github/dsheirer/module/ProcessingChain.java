@@ -927,6 +927,20 @@ public class ProcessingChain implements Listener<ChannelEvent>
     }
 
     /**
+     * Rod build: adds a listener for every message the decoders produce (used by the status reporter to measure how
+     * many control channel messages decode cleanly)
+     */
+    public void addMessageListener(Listener<IMessage> listener)
+    {
+        mMessageBroadcaster.addListener(listener);
+    }
+
+    public void removeMessageListener(Listener<IMessage> listener)
+    {
+        mMessageBroadcaster.removeListener(listener);
+    }
+
+    /**
      * Adds the listener to receive decoder state events from decoder modules
      */
     public void addDecoderStateEventListener(Listener<DecoderStateEvent> listener)

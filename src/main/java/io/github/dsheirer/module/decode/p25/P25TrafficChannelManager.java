@@ -119,6 +119,9 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private List<Channel> mManagedPhase1TrafficChannels;
     private List<Channel> mManagedPhase2TrafficChannels;
     private Map<Long,Channel> mAllocatedTrafficChannelMap = new HashMap<>();
+    //Rod build: traffic channels stopped because their frequency was granted to a Skip Decode talkgroup (see
+    //stopChannelForSkip). Their IGNORED event tracker is kept when they stop, so the skip is logged once.
+    private final java.util.Set<Channel> mSkipStopping = new java.util.HashSet<>();
     private Map<Long, P25ChannelEventTracker> mTS1ChannelGrantEventMap = new HashMap<>();
     private Map<Long, P25ChannelEventTracker> mTS2ChannelGrantEventMap = new HashMap<>();
     private ReentrantLock mLock = new ReentrantLock();
@@ -1201,6 +1204,28 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         return isSkipDecode(to) ? IGNORED_SKIP_DECODE : IGNORED_DO_NOT_MONITOR;
     }
 
+    /**
+     * Rod build: a Skip Decode talkgroup was just granted a frequency where a traffic channel is still running (it was
+     * started for an earlier call and hasn't torn down yet). Stop that channel, so the skipped call is never decoded.
+     * Phase 1 only - a Phase 2 channel can be carrying a wanted call on its other timeslot.
+     * Note: the calling method holds mLock.
+     */
+    private void stopChannelForSkip(long frequency)
+    {
+        if(frequency == getCurrentControlFrequency())
+        {
+            return;
+        }
+        Channel channel = mAllocatedTrafficChannelMap.get(frequency);
+        if(channel != null && channel != mParentChannel && mManagedPhase1TrafficChannels != null &&
+            mManagedPhase1TrafficChannels.contains(channel) &&
+            mSkipStopping.add(channel))
+        {
+            mLog.info("Skip Decode: stopping traffic channel on " + frequency + " - its frequency was granted to a skipped talkgroup");
+            broadcast(new ChannelEvent(channel, Event.REQUEST_DISABLE));
+        }
+    }
+
     private boolean isIgnored(IdentifierCollection ic)
     {
         if(mAliasList == null || ic == null)
@@ -1401,6 +1426,12 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             broadcast(tracker);
 
+            //Rod build: a skipped call still going on a frequency where a traffic channel is running - stop it
+            if(isIgnoredDoNotMonitor(ic))
+            {
+                stopChannelForSkip(frequency);
+            }
+
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
             if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) &&
@@ -1459,6 +1490,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             tracker = new P25ChannelEventTracker(ignoredEvent);
             addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
             broadcast(tracker);
+            stopChannelForSkip(frequency);   //Rod build: don't let a channel still running on this frequency decode it
             return;
         }
 
@@ -1929,7 +1961,11 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                     .findFirst()
                                     .ifPresent(frequency -> {
                                         mAllocatedTrafficChannelMap.remove(frequency);
-                                        removeTracker(frequency, P25P1Message.TIMESLOT_1);
+                                        //Rod build: stopped for a skipped call - keep its IGNORED tracker
+                                        if(!mSkipStopping.remove(channel))
+                                        {
+                                            removeTracker(frequency, P25P1Message.TIMESLOT_1);
+                                        }
                                         mAvailablePhase1TrafficChannelQueue.add(channel);
                                     });
                             break;
