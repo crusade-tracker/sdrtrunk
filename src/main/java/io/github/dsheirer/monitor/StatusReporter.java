@@ -487,7 +487,7 @@ public class StatusReporter
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
             }
-            catch(Exception e)
+            catch(Exception listEx)
             {
                 //changed while reading - next report
             }
