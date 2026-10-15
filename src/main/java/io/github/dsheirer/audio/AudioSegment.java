@@ -29,6 +29,9 @@ import io.github.dsheirer.identifier.IdentifierUpdateNotification;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
 import io.github.dsheirer.identifier.Role;
 import io.github.dsheirer.identifier.alias.TalkerAliasIdentifier;
+import io.github.dsheirer.identifier.patch.PatchGroup;
+import io.github.dsheirer.identifier.patch.PatchGroupIdentifier;
+import io.github.dsheirer.identifier.talkgroup.TalkgroupIdentifier;
 import io.github.dsheirer.identifier.radio.RadioIdentifier;
 import io.github.dsheirer.identifier.encryption.EncryptionKeyIdentifier;
 import io.github.dsheirer.sample.Broadcaster;
@@ -89,6 +92,9 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
     //Rod build: every radio heard talking in this segment, in order, with when it started (ms into the audio). The
     //identifier collection only keeps the last FROM, so a handoff inside one segment would otherwise be lost.
     private final List<Talker> mTalkers = new CopyOnWriteArrayList<>();
+    //Rod build: the call is to a talkgroup whose alias has Skip Decode on - its audio is not played, streamed or
+    //recorded, whichever channel decoded it (a channel already running on that frequency can still pick it up)
+    private volatile boolean mSkipped = false;
 
     /**
      * Constructs an instance
@@ -239,7 +245,77 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
      */
     public boolean isDoNotMonitor()
     {
-        return mMonitorPriority.get() <= Priority.DO_NOT_MONITOR;
+        return mSkipped || mMonitorPriority.get() <= Priority.DO_NOT_MONITOR;
+    }
+
+    /**
+     * Rod build: true when the call is to a talkgroup set to Skip Decode (for a patch: every patched talkgroup is).
+     * Such audio is never played, streamed or recorded.
+     */
+    public boolean isSkipped()
+    {
+        return mSkipped;
+    }
+
+    private boolean isSkipDecode(Identifier to)
+    {
+        try
+        {
+            if(mAliasList == null)
+            {
+                return false;
+            }
+            if(to instanceof TalkgroupIdentifier)
+            {
+                return hasSkipAlias(to);
+            }
+            if(to instanceof PatchGroupIdentifier pgi && pgi.getValue() != null)
+            {
+                PatchGroup pg = pgi.getValue();
+                if(pg.hasPatchedRadios())
+                {
+                    return false;
+                }
+                List<TalkgroupIdentifier> members = pg.getPatchedTalkgroupIdentifiers();
+                if(members == null || members.isEmpty())
+                {
+                    return hasSkipAlias(pg.getPatchGroup());
+                }
+                for(TalkgroupIdentifier member: members)
+                {
+                    if(!hasSkipAlias(member))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+        catch(Exception e)
+        {
+            //never let this get in the way of audio
+        }
+        return false;
+    }
+
+    private boolean hasSkipAlias(Identifier id)
+    {
+        if(id == null)
+        {
+            return false;
+        }
+        List<Alias> aliases = mAliasList.getAliases(id);
+        if(aliases != null)
+        {
+            for(Alias alias: aliases)
+            {
+                if(alias != null && alias.isSkipDecode())
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -447,6 +523,10 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
     {
         mIdentifierCollection.update(identifier);
         noteTalker(identifier);
+        if(identifier != null && identifier.getRole() == Role.TO)
+        {
+            mSkipped = isSkipDecode(identifier);
+        }
 
         /**
          * If we have a late-add encryption key, set the encrypted flag to true.

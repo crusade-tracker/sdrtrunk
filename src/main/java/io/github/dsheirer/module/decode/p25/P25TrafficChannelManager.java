@@ -130,7 +130,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private ScrambleParameters mPhase2ScrambleParameters;
     private Listener<IMessage> mMessageListener;
     private boolean mIgnoreDataCalls;
-    private boolean mIgnoreDoNotMonitor;
     private AliasList mAliasList;
     //Used only for data calls
     private DecodeEventDuplicateDetector mDuplicateDetector = new DecodeEventDuplicateDetector();
@@ -147,14 +146,12 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase1 phase1)
         {
             mIgnoreDataCalls = phase1.getIgnoreDataCalls();
-            mIgnoreDoNotMonitor = phase1.getIgnoreDoNotMonitor();
             createPhase1TrafficChannels(phase1.getTrafficChannelPoolSize(), phase1);
             createPhase2TrafficChannels(phase1.getTrafficChannelPoolSize(), new DecodeConfigP25Phase2());
         }
         else if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase2 phase2)
         {
             mIgnoreDataCalls = phase2.getIgnoreDataCalls();
-            mIgnoreDoNotMonitor = phase2.getIgnoreDoNotMonitor();
             createPhase1TrafficChannels(phase2.getTrafficChannelPoolSize(), new DecodeConfigP25Phase1());
             createPhase2TrafficChannels(phase2.getTrafficChannelPoolSize(), phase2);
         }
@@ -1276,8 +1273,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
         for(Alias alias: mAliasList.getAliases(talkgroup))
         {
-            if(alias != null && (alias.isSkipDecode() ||
-                (mIgnoreDoNotMonitor && alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR)))
+            //Rod build: only Skip Decode. Listen off (Do Not Monitor) is stock again - speakers only.
+            if(alias != null && alias.isSkipDecode())
             {
                 return true;
             }

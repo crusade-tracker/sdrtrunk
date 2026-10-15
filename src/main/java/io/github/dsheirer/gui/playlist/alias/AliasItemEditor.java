@@ -1098,7 +1098,7 @@ public class AliasItemEditor extends Editor<Alias>
             mTextFieldPane.getChildren().add(skipDecodeLabel);
             GridPane.setConstraints(getSkipDecodeToggleSwitch(), 3, row);
             mTextFieldPane.getChildren().add(getSkipDecodeToggleSwitch());
-            Label skipDecodeHint = new Label("P25: don't follow calls to this talkgroup (no tuner, no decoding)");
+            Label skipDecodeHint = new Label("P25: calls to this talkgroup are not followed, and any of its audio is dropped (not played, streamed or recorded)");
             GridPane.setConstraints(skipDecodeHint, 4, row, 4, 1);
             mTextFieldPane.getChildren().add(skipDecodeHint);
         }

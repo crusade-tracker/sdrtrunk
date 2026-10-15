@@ -145,7 +145,12 @@ public class AudioStreamingManager implements Listener<AudioSegment>
             {
                 it.remove();
 
-                if(mAudioRecordingListener != null && audioSegment.hasBroadcastChannels())
+                //Rod build: calls to Skip Decode talkgroups are dropped here (and counted for the scanner's SDR-Trunk page)
+                if(audioSegment.isSkipped())
+                {
+                    io.github.dsheirer.monitor.SkippedAudio.note(audioSegment);
+                }
+                else if(mAudioRecordingListener != null && audioSegment.hasBroadcastChannels())
                 {
                     IdentifierCollection identifiers =
                             new IdentifierCollection(audioSegment.getIdentifierCollection().getIdentifiers());

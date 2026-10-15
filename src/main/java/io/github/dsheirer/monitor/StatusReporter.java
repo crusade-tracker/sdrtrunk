@@ -326,9 +326,9 @@ public class StatusReporter
             }
             for(Alias alias: aliases)
             {
-                if(alias.getPlaybackPriority() == Priority.DO_NOT_MONITOR || alias.isSkipDecode())
+                if(alias.isSkipDecode())
                 {
-                    return;
+                    return;   //skipped on purpose (Listen off is stock again: speakers only, still streamed)
                 }
                 for(String stream: streams)
                 {
@@ -459,6 +459,10 @@ public class StatusReporter
             List<Map<String,Object>> events = new ArrayList<>();
             Map<String,Object> e;
             while((e = mEvents.poll()) != null)
+            {
+                events.add(e);
+            }
+            while((e = SkippedAudio.poll()) != null && events.size() < MAX_QUEUED_EVENTS)
             {
                 events.add(e);
             }

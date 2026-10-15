@@ -65,7 +65,7 @@ public class CallDetails
     private static final long GRANT_KEEP_MS = 10 * 60 * 1000;
     private static String sInstance;
 
-    private record Grant(long start, long seen, boolean emergency, Integer priority, String from) {}
+    private record Grant(long start, long seen, boolean emergency, Integer priority, String from, boolean encrypted) {}
 
     private CallDetails() {}
 
@@ -100,12 +100,13 @@ public class CallDetails
                 //Keep an emergency flag for the same call even if a later update doesn't repeat it
                 boolean emergency = options.isEmergency() || (old != null && old.emergency() && old.start() == start);
                 String by = options.isEmergency() ? fromValue : (emergency ? old.from() : fromValue);
-                GRANTS.put(key, new Grant(start, now, emergency, priority, by));
+                GRANTS.put(key, new Grant(start, now, emergency, priority, by, options.isEncrypted()));
             }
             else if(event.getEventType() == DecodeEventType.EMERGENCY)
             {
                 Grant old = GRANTS.get(key);
-                GRANTS.put(key, new Grant(start, now, true, old != null ? old.priority() : null, fromValue));
+                GRANTS.put(key, new Grant(start, now, true, old != null ? old.priority() : null, fromValue,
+                    old != null && old.encrypted()));
             }
             else
             {
@@ -150,7 +151,6 @@ public class CallDetails
             long start = segment.getStartTimestamp();
             d.put("start", start);
             d.put("end", start + lengthMs);
-            d.put("encrypted", segment.isEncrypted());
 
             Identifier decoder = ic.getIdentifier(IdentifierClass.CONFIGURATION, Form.DECODER_TYPE, Role.ANY);
             if(decoder instanceof DecoderTypeConfigurationIdentifier dt && dt.getValue() != null)
@@ -253,6 +253,11 @@ public class CallDetails
                         {
                             d.put("emergencyBy", g.from());
                         }
+                    }
+                    //Encrypted comes from the grant: the audio segment's own flag was wrong on clear calls
+                    if(g.encrypted())
+                    {
+                        d.put("encrypted", true);
                     }
                     if(g.priority() != null)
                     {

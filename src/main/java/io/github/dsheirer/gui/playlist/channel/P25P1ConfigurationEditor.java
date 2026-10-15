@@ -150,13 +150,8 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
             GridPane.setConstraints(modulationHelpLabel, 0, 1, 4, 1);
             gridPane.getChildren().add(modulationHelpLabel);
 
-            GridPane.setConstraints(getIgnoreDoNotMonitorButton(), 4, 1);
-            gridPane.getChildren().add(getIgnoreDoNotMonitorButton());
-
-            Label ignoreDoNotMonitorLabel = new Label("Ignore Do Not Monitor Calls");
-            GridPane.setHalignment(ignoreDoNotMonitorLabel, HPos.LEFT);
-            GridPane.setConstraints(ignoreDoNotMonitorLabel, 5, 1);
-            gridPane.getChildren().add(ignoreDoNotMonitorLabel);
+            //Rod build: "Ignore Do Not Monitor Calls" removed - the alias Skip Decode switch does this job, Listen is
+            //back to stock (speakers only)
 
             mDecoderPane.setContent(gridPane);
         }
@@ -394,7 +389,7 @@ public class P25P1ConfigurationEditor extends ChannelConfigurationEditor
         }
 
         config.setIgnoreDataCalls(getIgnoreDataCallsButton().isSelected());
-        config.setIgnoreDoNotMonitor(getIgnoreDoNotMonitorButton().isSelected());
+        config.setIgnoreDoNotMonitor(false);   //Rod build: switch removed, clear it on save
         config.setTrafficChannelPoolSize(getTrafficChannelPoolSizeSpinner().getValue());
         config.setModulation(getC4FMToggleButton().isSelected() ? Modulation.C4FM : Modulation.CQPSK);
         getItem().setDecodeConfiguration(config);

@@ -120,7 +120,8 @@ public class AudioRecordingManager implements Listener<AudioSegment>
 //            mLog.debug("Audio Segment detected with NO TO identifiers");
         }
 
-        if(audioSegment.recordAudioProperty().get())
+        //Rod build: never record calls to Skip Decode talkgroups
+        if(audioSegment.recordAudioProperty().get() && !audioSegment.isSkipped())
         {
             mCompletedAudioSegmentQueue.add(audioSegment);
         }

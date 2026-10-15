@@ -135,13 +135,7 @@ public class P25P2ConfigurationEditor extends ChannelConfigurationEditor
             GridPane.setConstraints(directionLabel, 3, row);
             gridPane.getChildren().add(directionLabel);
 
-            GridPane.setConstraints(getIgnoreDoNotMonitorButton(), 4, row);
-            gridPane.getChildren().add(getIgnoreDoNotMonitorButton());
-
-            Label ignoreDoNotMonitorLabel = new Label("Ignore Do Not Monitor Calls");
-            GridPane.setHalignment(ignoreDoNotMonitorLabel, HPos.LEFT);
-            GridPane.setConstraints(ignoreDoNotMonitorLabel, 5, row);
-            gridPane.getChildren().add(ignoreDoNotMonitorLabel);
+            //Rod build: "Ignore Do Not Monitor Calls" removed - the alias Skip Decode switch does this job
 
             Label wacnLabel = new Label("WACN");
             GridPane.setHalignment(wacnLabel, HPos.RIGHT);
@@ -411,7 +405,7 @@ public class P25P2ConfigurationEditor extends ChannelConfigurationEditor
         int nac = getNacTextField().get();
         config.setScrambleParameters(new ScrambleParameters(wacn, system, nac));
         config.setIgnoreDataCalls(getIgnoreDataCallsButton().isSelected());
-        config.setIgnoreDoNotMonitor(getIgnoreDoNotMonitorButton().isSelected());
+        config.setIgnoreDoNotMonitor(false);   //Rod build: switch removed, clear it on save
         config.setTrafficChannelPoolSize(getTrafficChannelPoolSizeSpinner().getValue());
 
         getItem().setDecodeConfiguration(config);
