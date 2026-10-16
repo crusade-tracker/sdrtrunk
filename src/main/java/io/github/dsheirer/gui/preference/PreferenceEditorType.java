@@ -26,6 +26,7 @@ public enum PreferenceEditorType
 {
     APPLICATION("General"),
     APPEARANCE("Appearance"),
+    SCANNER("Scanner"),   //Rod build: the scanner SDR-Trunk reports to
     CHANNEL_EVENT("Channel Events"),
     DIRECTORY("Directories"),
     JMBE_LIBRARY("JMBE Audio Library"),

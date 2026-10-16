@@ -45,6 +45,8 @@ public class PreferenceEditorFactory
                 return new ApplicationPreferenceEditor(userPreferences);
             case APPEARANCE:
                 return new AppearancePreferenceEditor(userPreferences);
+            case SCANNER:
+                return new io.github.dsheirer.gui.preference.scanner.ScannerLinkPreferenceEditor();
             case AUDIO_CALL_MANAGEMENT:
                 return new CallManagementPreferenceEditor(userPreferences);
             case AUDIO_MP3:

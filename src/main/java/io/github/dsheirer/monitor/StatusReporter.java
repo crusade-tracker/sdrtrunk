@@ -86,9 +86,10 @@ import java.util.concurrent.TimeUnit;
  * Rod build: sends a small status report (tuners, running channels, problem events, CPU/memory) to the Rdio Scanner
  * server every few seconds, so the scanner's admin page can show what SDR-Trunk is doing without a remote desktop.
  *
- * Uses the first enabled Rdio Scanner streaming configuration: same server and API key as the call uploads, posted
- * to /api/sdrtrunk/status on that server. Outbound only - nothing listens here. If there is no Rdio Scanner
- * streaming configuration, or the server doesn't answer, nothing happens apart from an occasional log line.
+ * Reports to the scanner set in User Preferences > Application > Scanner (ScannerLink - its own setting, not tied to
+ * any stream; filled in once from the first enabled Radio Scanner stream), posted to /api/sdrtrunk/status on that
+ * server. Outbound only - nothing listens here. If no scanner is set, or it doesn't answer, nothing happens apart from
+ * an occasional log line.
  *
  * Remote control (stage 2): the server's reply to a report can carry commands queued by the admin - start, stop or
  * restart a channel; enable, disable or restart a tuner; set a tuner's PPM. They are carried out here the same way
@@ -458,14 +459,25 @@ public class StatusReporter
     {
         try
         {
-            RdioScannerConfiguration config = getConfiguration();
-            if(config == null)
+            //The scanner link is its own setting (User Preferences > Application > Scanner). The first time, it is
+            //filled in from the Radio Scanner stream the reports used before - after that, streams don't affect it.
+            if(!ScannerLink.isSet())
             {
-                problem("no enabled Radio Scanner streaming configuration - status reports are off");
+                RdioScannerConfiguration stream = getConfiguration();
+                if(stream != null && stream.getApiKey() != null && !stream.getApiKey().isBlank())
+                {
+                    ScannerLink.set(stream.getHost(), stream.getApiKey());
+                    mLog.info("Scanner link set from stream '" + stream.getName() + "': " + ScannerLink.getUrl() +
+                        " - change it in User Preferences > Application > Scanner");
+                }
+            }
+            if(!ScannerLink.isUsable())
+            {
+                problem("no scanner set in User Preferences > Application > Scanner - status reports are off");
                 return;
             }
 
-            URI status = URI.create(config.getHost().trim()).resolve(STATUS_PATH);
+            URI status = URI.create(ScannerLink.getUrl()).resolve(STATUS_PATH);
 
             List<Map<String,Object>> events = new ArrayList<>();
             Map<String,Object> e;
@@ -479,7 +491,7 @@ public class StatusReporter
             }
 
             Map<String,Object> body = new LinkedHashMap<>();
-            body.put("key", config.getApiKey());
+            body.put("key", ScannerLink.getApiKey());
             body.put("instance", mInstance);
             body.put("version", SystemProperties.getInstance().getApplicationName());
             body.put("uptimeSec", (System.currentTimeMillis() - mStartMillis) / 1000);
@@ -1363,10 +1375,6 @@ public class StatusReporter
                 return onFxThread(() -> {
                     BroadcastConfiguration config = findStream(target);
                     boolean on = Boolean.TRUE.equals(spec.get("on"));
-                    if(!on)
-                    {
-                        guardReportStream(config, "turn off");
-                    }
                     config.setEnabled(on);
                     mBroadcastModel.process(new io.github.dsheirer.audio.broadcast.BroadcastEvent(config,
                         io.github.dsheirer.audio.broadcast.BroadcastEvent.Event.CONFIGURATION_CHANGE));
@@ -1377,7 +1385,6 @@ public class StatusReporter
             {
                 return onFxThread(() -> {
                     BroadcastConfiguration config = findStream(target);
-                    guardReportStream(config, "delete");
                     mBroadcastModel.removeBroadcastConfiguration(config);
                     return config.getName() + " deleted (saved)";
                 });
@@ -2454,7 +2461,6 @@ public class StatusReporter
     private List<Map<String,Object>> streamsReport()
     {
         List<Map<String,Object>> out = new ArrayList<>();
-        RdioScannerConfiguration reporting = getConfiguration();
         List<Alias> aliases = new ArrayList<>(mAliasModel.getAliases());
         for(io.github.dsheirer.audio.broadcast.ConfiguredBroadcast cb: new ArrayList<>(mBroadcastModel.getConfiguredBroadcasts()))
         {
@@ -2475,7 +2481,6 @@ public class StatusReporter
                 m.put("agedOff", cb.getAudioBroadcaster().getAgedOffAudioCount());
                 m.put("errors", cb.getAudioBroadcaster().getAudioErrorCount());
             }
-            m.put("reporting", config == reporting);   //the stream SDR-Trunk reports to this scanner through
             String name = config.getName();
             m.put("aliasCount", name == null ? 0 : aliases.stream().filter(a -> a.hasBroadcastChannel(name)).count());
             Map<String,Object> values = new LinkedHashMap<>();
@@ -2712,19 +2717,6 @@ public class StatusReporter
         throw new Exception("there's no stream called '" + name + "' in SDR-Trunk");
     }
 
-    /**
-     * The scanner's admin page talks to SDR-Trunk through this stream's server and API key - turning it off, deleting
-     * it or pointing it elsewhere from the admin page would cut the admin page off. That's done in SDR-Trunk itself.
-     */
-    private void guardReportStream(BroadcastConfiguration config, String what) throws Exception
-    {
-        if(config == getConfiguration())
-        {
-            throw new Exception("can't " + what + " " + config.getName() + " from here - it is the stream SDR-Trunk uses to " +
-                "report to this scanner, so the admin page would lose SDR-Trunk. Do it in SDR-Trunk's Streaming tab.");
-        }
-    }
-
     private String streamCreate(Map<String,Object> spec) throws Exception
     {
         io.github.dsheirer.audio.broadcast.BroadcastServerType type;
@@ -2757,16 +2749,6 @@ public class StatusReporter
     private String streamEdit(String target, Map<String,Object> spec) throws Exception
     {
         BroadcastConfiguration config = findStream(target);
-        if(config == getConfiguration() && spec.get("values") instanceof Map<?,?> v &&
-            ((v.containsKey("host") && !String.valueOf(v.get("host")).trim().equals(String.valueOf(streamGet(config, "host")))) ||
-             (v.get("apiKey") != null && !String.valueOf(v.get("apiKey")).isEmpty())))
-        {
-            guardReportStream(config, "change the Scanner URL or API Key of");
-        }
-        if(Boolean.FALSE.equals(spec.get("enabled")))
-        {
-            guardReportStream(config, "turn off");
-        }
         String previousName = config.getName();
         String newName = asText(spec.get("name"));
         if(newName != null && !newName.isEmpty() && !newName.equals(previousName))
