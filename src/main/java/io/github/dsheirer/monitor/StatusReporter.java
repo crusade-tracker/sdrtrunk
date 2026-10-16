@@ -494,7 +494,7 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups"));   //the scanner shows New / Clone / Delete, Radio Reference
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies"));   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -1222,6 +1222,11 @@ public class StatusReporter
                 }
                 return message;
             }
+            case "rr_freq_create":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return rrFreqCreate(spec);
+            }
             case "rr_alias_import":
             {
                 Map<String,Object> spec = parseValue(value);
@@ -1553,6 +1558,26 @@ public class StatusReporter
             data.put("countyId", countyId);
             data.put("countySystems", countyId > 0 ? rrSystems(service.getCountyInfo(countyId).getSystems(), decoder) : new ArrayList<>());
             data.put("stateSystems", stateSystems);
+            //Agencies, as the tab lists them: the county's own frequencies first ("<county> County (All)", id = -countyId)
+            List<Map<String,Object>> countyAgencies = new ArrayList<>();
+            if(countyId > 0)
+            {
+                io.github.dsheirer.rrapi.type.CountyInfo countyInfo = service.getCountyInfo(countyId);
+                countyAgencies = idNames(countyInfo.getAgencies(), io.github.dsheirer.rrapi.type.Agency::getAgencyId,
+                    io.github.dsheirer.rrapi.type.Agency::getName);
+                Map<String,Object> all = new LinkedHashMap<>();
+                all.put("id", -countyId);
+                all.put("name", countyInfo.getName() + " County (All)");
+                countyAgencies.add(0, all);
+            }
+            data.put("countyAgencies", countyAgencies);
+            data.put("stateAgencies", stateId > 0 ? idNames(service.getStateInfo(stateId).getAgencies(),
+                io.github.dsheirer.rrapi.type.Agency::getAgencyId, io.github.dsheirer.rrapi.type.Agency::getName) : new ArrayList<>());
+            data.put("nationalAgencies", countryId > 0 ? idNames(service.getCountryInfo(countryId).getAgencies(),
+                io.github.dsheirer.rrapi.type.Agency::getAgencyId, io.github.dsheirer.rrapi.type.Agency::getName) : new ArrayList<>());
+            data.put("countyAgencyId", pref.getPreferredAgencyId(io.github.dsheirer.gui.playlist.radioreference.Level.COUNTY));
+            data.put("stateAgencyId", pref.getPreferredAgencyId(io.github.dsheirer.gui.playlist.radioreference.Level.STATE));
+            data.put("nationalAgencyId", pref.getPreferredAgencyId(io.github.dsheirer.gui.playlist.radioreference.Level.NATIONAL));
             data.put("countySystemId", pref.getPreferredSystemId(io.github.dsheirer.gui.playlist.radioreference.Level.COUNTY));
             data.put("stateSystemId", pref.getPreferredSystemId(io.github.dsheirer.gui.playlist.radioreference.Level.STATE));
             return data;
@@ -1626,6 +1651,102 @@ public class StatusReporter
             return data;
         }
 
+        if("query_rr_agency".equals(action) || "query_rr_freqs".equals(action))
+        {
+            //target: level|agencyId (query_rr_agency) or level|agencyId|categoryId|subCategoryId (query_rr_freqs,
+            //0 = all, like the tab's "All" choices). A negative agency id is the county's own frequencies.
+            String level = parts.length > 0 ? parts[0] : "county";
+            int agencyId = parts.length > 1 && !parts[1].isBlank() ? Integer.parseInt(parts[1].trim()) : 0;
+            io.github.dsheirer.gui.playlist.radioreference.Level lv = "national".equals(level) ?
+                io.github.dsheirer.gui.playlist.radioreference.Level.NATIONAL : "state".equals(level) ?
+                io.github.dsheirer.gui.playlist.radioreference.Level.STATE : io.github.dsheirer.gui.playlist.radioreference.Level.COUNTY;
+            List<io.github.dsheirer.rrapi.type.Category> categories = agencyId < 0 ?
+                service.getCountyInfo(-agencyId).getCategories() : service.getAgencyInfo(agencyId).getCategories();
+            if(categories == null)
+            {
+                categories = new ArrayList<>();
+            }
+            if("query_rr_agency".equals(action))
+            {
+                pref.setPreferredAgencyId(agencyId, lv);
+                List<Map<String,Object>> cats = new ArrayList<>();
+                for(io.github.dsheirer.rrapi.type.Category category: categories)
+                {
+                    Map<String,Object> m = new LinkedHashMap<>();
+                    m.put("id", category.getCategoryId());
+                    m.put("name", category.getName());
+                    m.put("subs", idNames(category.getSubCategories(), io.github.dsheirer.rrapi.type.SubCategory::getSubCategoryId,
+                        io.github.dsheirer.rrapi.type.SubCategory::getName));
+                    cats.add(m);
+                }
+                Map<String,Object> data = new LinkedHashMap<>();
+                data.put("agencyId", agencyId);
+                data.put("categories", cats);
+                return data;
+            }
+
+            int categoryId = intAt(parts, 2), subCategoryId = intAt(parts, 3);
+            Map<String,Object> data = new LinkedHashMap<>();
+            List<Map<String,Object>> freqs = new ArrayList<>();
+            Map<Integer,io.github.dsheirer.rrapi.type.Mode> modes = service.getModesMap();
+            for(io.github.dsheirer.rrapi.type.Category category: categories)
+            {
+                if(categoryId != 0 && category.getCategoryId() != categoryId)
+                {
+                    continue;
+                }
+                if(category.getSubCategories() == null)
+                {
+                    continue;
+                }
+                for(io.github.dsheirer.rrapi.type.SubCategory sub: category.getSubCategories())
+                {
+                    if(subCategoryId != 0 && sub.getSubCategoryId() != subCategoryId)
+                    {
+                        continue;
+                    }
+                    List<io.github.dsheirer.rrapi.type.Frequency> list = service.getSubCategoryFrequencies(sub.getSubCategoryId());
+                    if(list == null)
+                    {
+                        continue;
+                    }
+                    for(io.github.dsheirer.rrapi.type.Frequency f: list)
+                    {
+                        Map<String,Object> m = new LinkedHashMap<>();
+                        m.put("id", f.getFrequencyId());
+                        m.put("alpha", f.getAlphaTag());
+                        m.put("description", f.getDescription());
+                        m.put("hz", (long)(f.getDownlink() * 1E6));
+                        m.put("tone", f.getTone());
+                        io.github.dsheirer.rrapi.type.Mode mode = null;
+                        try
+                        {
+                            mode = modes.get(Integer.parseInt(f.getMode()));
+                        }
+                        catch(Exception e)
+                        {
+                            //no mode
+                        }
+                        io.github.dsheirer.gui.playlist.radioreference.ModeDecoderType mdt =
+                            io.github.dsheirer.gui.playlist.radioreference.ModeDecoderType.get(mode);
+                        m.put("mode", mode != null ? mode.getName() : null);
+                        m.put("modeId", f.getMode());
+                        m.put("decoder", mdt.hasDecoderType() ? mdt.getDecoderType().getDisplayString() : null);
+                        m.put("system", category.getName());
+                        m.put("site", sub.getName());
+                        freqs.add(m);
+                    }
+                }
+            }
+            //Same order as the tab: by alpha tag, blank ones last
+            freqs.sort((a, b) -> {
+                String x = (String)a.get("alpha"), y = (String)b.get("alpha");
+                return x == null ? (y == null ? 0 : 1) : y == null ? -1 : x.compareTo(y);
+            });
+            data.put("freqs", freqs);
+            return data;
+        }
+
         if("query_rr_talkgroups".equals(action))
         {
             //target: county|countyId|systemId|aliasList - the Talkgroup View, with the alias each talkgroup already
@@ -1694,6 +1815,63 @@ public class StatusReporter
         }
 
         throw new Exception("unknown query '" + action + "' - this SDR-Trunk build is older than the scanner");
+    }
+
+    /**
+     * Agency frequency -> channel from the scanner's Radio Reference section, built by the tab's own FrequencyEditor
+     * code (decoder from the RR mode; 25 kHz for FM, C4FM for P25, NXDN 4800/9600). Like the tab, no alias list or tone
+     * is set - the admin's channel form does that.
+     */
+    private String rrFreqCreate(Map<String,Object> spec) throws Exception
+    {
+        io.github.dsheirer.rrapi.RadioReferenceService service;
+        try
+        {
+            service = mPlaylistManager.getRadioReference().getService();
+        }
+        catch(Exception e)
+        {
+            throw new Exception(rrError(e));
+        }
+        long hz = Long.parseLong(str(spec.get("hz")));
+        if(hz < 1_000_000L || hz > 6_000_000_000L)
+        {
+            throw new Exception(hz + " isn't a frequency in Hz");
+        }
+        io.github.dsheirer.rrapi.type.Mode mode = null;
+        try
+        {
+            mode = service.getModesMap().get(Integer.parseInt(str(spec.get("modeId"))));
+        }
+        catch(NumberFormatException nfe)
+        {
+            //no mode
+        }
+        io.github.dsheirer.gui.playlist.radioreference.ModeDecoderType mdt =
+            io.github.dsheirer.gui.playlist.radioreference.ModeDecoderType.get(mode);
+        if(!mdt.hasDecoderType())
+        {
+            throw new Exception("SDR-Trunk has no decoder for Radio Reference mode " + (mode != null ? mode.getName() : "(none)"));
+        }
+        if(str(spec.get("name")).isEmpty())
+        {
+            throw new Exception("the channel needs a name");
+        }
+        Channel channel = onFxThread(() -> {
+            Channel c = io.github.dsheirer.gui.playlist.radioreference.FrequencyEditor.buildChannel(mdt, hz,
+                str(spec.get("system")), str(spec.get("site")), str(spec.get("name")));
+            if(c != null)
+            {
+                mChannelModel.addChannel(c);
+            }
+            return c;
+        });
+        if(channel == null)
+        {
+            throw new Exception("SDR-Trunk couldn't make a channel for that mode");
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        return channel.getName() + " added (saved)";
     }
 
     /**

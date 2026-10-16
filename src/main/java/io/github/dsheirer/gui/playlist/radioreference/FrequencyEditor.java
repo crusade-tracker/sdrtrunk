@@ -405,6 +405,15 @@ public class FrequencyEditor extends VBox
      */
     private Channel createChannel(ModeDecoderType modeDecoderType, long frequency, String system, String site, String name)
     {
+        return buildChannel(modeDecoderType, frequency, system, site, name);
+    }
+
+    /**
+     * Rod build: the same channel this editor's Create button makes, for the scanner's admin page (agency frequencies).
+     * @return configured channel or null when the mode has no decoder
+     */
+    public static Channel buildChannel(ModeDecoderType modeDecoderType, long frequency, String system, String site, String name)
+    {
         if(modeDecoderType.hasDecoderType())
         {
             Channel channel = new Channel();
