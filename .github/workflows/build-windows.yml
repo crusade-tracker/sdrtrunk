@@ -1,8 +1,9 @@
 # Builds SDR-Trunk for Windows from any point in DSheirer/sdrtrunk's history, on GitHub's servers.
 # Each build is kept as its own release, so older builds are never overwritten.
 # Give it a name ("Remote control", "Auto PPM fix") and that is what the release, its tag, the zip and SDR-Trunk's
-# zip show: "Rod build 2026-10-14 - Remote control". SDR-Trunk's title bar just shows v2026-10-14-rod (-2, -3 for a
-# second or third build that day). Leave the name empty for the old build-<date>-<commit> style.
+# zip show. A branch build gets the next running number: "Rod build 016 - Remote control (2026-10-16)", tag
+# rod-016-remote-control, and SDR-Trunk's title bar, zip and the scanner's admin page show rod-016.
+# Leave the name empty for the old build-<date>-<commit> style.
 #
 # Run it: Actions tab -> "Build Windows (choose version)" -> Run workflow -> enter a version -> Run.
 #   latest       newest code on DSheirer/sdrtrunk
@@ -70,16 +71,30 @@ jobs:
             SLUG=$(echo "$NAME" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
             WHO=$([ -n "$BRANCH" ] && echo "Rod build" || echo "SDR-Trunk")
             KIND=$( [ -n "$BRANCH" ] && echo rod || echo sdrtrunk )
-            # GitHub lists these releases by tag name, Z to A - so the tag carries the build number of the day right after
-            # the date (rod-2026-10-15-02-name) and the newest build always comes first.
-            SAMEDAY=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/$KIND-$BDATE-" --jq length 2>/dev/null || echo 0)
-            N=$((SAMEDAY + 1))
-            TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"
-            while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"; done
-            TITLE="$WHO $BDATE - $NAME"
-            # Title bar stays short: date + "rod" (-2, -3 for later builds that day). The full name is on the release.
-            VERSION="$BDATE-$( [ -n "$BRANCH" ] && echo rod || echo build )"
-            if [ "$N" -gt 1 ]; then VERSION="$VERSION-$N"; fi
+            if [ "$KIND" = "rod" ]; then
+              # Rod builds: one running number that never resets (rod-016, rod-017 ...), 3 digits so GitHub lists the
+              # newest first. The 15 builds before this scheme used dated names, so numbering starts at 016.
+              LAST=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/rod-" --jq '.[].ref' 2>/dev/null \
+                     | sed -n 's#^refs/tags/rod-\([0-9][0-9][0-9]\)-.*#\1#p' | sort -n | tail -1)
+              N=$((10#${LAST:-15})); [ "$N" -lt 15 ] && N=15
+              N=$((N + 1))
+              NUM=$(printf %03d $N)
+              TAG="rod-$NUM-$SLUG"
+              while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); NUM=$(printf %03d $N); TAG="rod-$NUM-$SLUG"; done
+              TITLE="Rod build $NUM - $NAME ($BDATE)"
+              # Title bar, zip and the admin page all show rod-016
+              VERSION="rod-$NUM"
+            else
+              # GitHub lists these releases by tag name, Z to A - so the tag carries the build number of the day right after
+              # the date (sdrtrunk-2026-10-15-02-name) and the newest build always comes first.
+              SAMEDAY=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/$KIND-$BDATE-" --jq length 2>/dev/null || echo 0)
+              N=$((SAMEDAY + 1))
+              TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"
+              while gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; do N=$((N+1)); TAG="$KIND-$BDATE-$(printf %02d $N)-$SLUG"; done
+              TITLE="$WHO $BDATE - $NAME"
+              VERSION="$BDATE-build"
+              if [ "$N" -gt 1 ]; then VERSION="$VERSION-$N"; fi
+            fi
           fi
           {
             echo "SHA=$SHA"
