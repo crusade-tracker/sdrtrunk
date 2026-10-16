@@ -483,6 +483,7 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
+            body.put("features", List.of("channel_create", "channel_delete"));   //the scanner shows New / Clone / Delete
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -930,6 +931,10 @@ public class StatusReporter
                 {
                     m.put("modulation", p1.getModulation() == io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK ? "LSM" : "C4FM");
                 }
+                if(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm)
+                {
+                    putNbfm(m, nbfm);
+                }
             }
             if(c.getSourceConfiguration() instanceof SourceConfigTuner sct)
             {
@@ -1166,6 +1171,41 @@ public class StatusReporter
             {
                 Map<String,Object> change = parseValue(value);
                 return onFxThread(() -> editChannel(target, change));
+            }
+            case "channel_create":
+            {
+                Map<String,Object> spec = parseValue(value);
+                Channel c = onFxThread(() -> createChannel(spec));
+                String message = c.getName() + " added (saved)";
+                if(c.isAutoStart())
+                {
+                    try
+                    {
+                        startChannel(c);
+                        message += " and started";
+                    }
+                    catch(Exception e)
+                    {
+                        message += " - couldn't start it: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                    }
+                }
+                return message;
+            }
+            case "channel_delete":
+            {
+                Channel c = findChannel(target);
+                String name = c.getName();
+                if(c.isProcessing())
+                {
+                    mChannelProcessingManager.stop(c);
+                    Thread.sleep(500);   //let it shut down before it leaves the playlist
+                }
+                onFxThread(() -> {
+                    mChannelModel.removeChannel(c);
+                    mPlaylistManager.schedulePlaylistSave();
+                    return null;
+                });
+                return name + " deleted (saved)";
             }
             case "alias_set":
             {
@@ -1638,6 +1678,75 @@ public class StatusReporter
     private String editChannel(String target, Map<String,Object> change) throws Exception
     {
         Channel c = findChannel(target);
+        List<String> done = applyChanges(c, change);
+
+        if(done.isEmpty())
+        {
+            return c.getName() + ": nothing to change";
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        return c.getName() + ": changed " + String.join(", ", done) + " (saved)" +
+            (c.isProcessing() ? " - restart the channel to use the new settings" : "");
+    }
+
+    /**
+     * Rod build: adds a channel to the playlist from the scanner's admin page (New channel, or Clone). Clone starts
+     * from a full copy of the existing channel (copyFrom), so its logging, recording and additional decoders come
+     * along; New starts from SDR-Trunk's defaults for the decoder type (P25 Phase 1 or NBFM). The rest of the spec is
+     * applied the same way as channel_edit. Needs a name and at least one frequency.
+     */
+    private Channel createChannel(Map<String,Object> spec) throws Exception
+    {
+        Channel c;
+        if(spec.get("copyFrom") != null && !str(spec.get("copyFrom")).isEmpty())
+        {
+            c = findChannel(str(spec.get("copyFrom"))).copyOf();
+        }
+        else
+        {
+            String decoder = str(spec.get("decoder")).toUpperCase();
+            io.github.dsheirer.module.decode.DecoderType type;
+            if(decoder.equals("P25_PHASE1"))
+            {
+                type = io.github.dsheirer.module.decode.DecoderType.P25_PHASE1;
+            }
+            else if(decoder.equals("NBFM"))
+            {
+                type = io.github.dsheirer.module.decode.DecoderType.NBFM;
+            }
+            else
+            {
+                throw new Exception("new channels can be P25 Phase 1 or NBFM for now - not \"" + decoder + "\"");
+            }
+            c = new Channel();
+            c.setDecodeConfiguration(io.github.dsheirer.module.decode.DecoderFactory.getDecodeConfiguration(type));
+        }
+
+        if(str(spec.get("name")).isEmpty())
+        {
+            throw new Exception("the channel needs a name");
+        }
+        Map<String,Object> change = new LinkedHashMap<>(spec);
+        change.remove("copyFrom");
+        change.remove("decoder");
+        applyChanges(c, change);
+
+        if(c.getFrequencyList() == null || c.getFrequencyList().isEmpty() || c.getFrequencyList().get(0) == null ||
+            c.getFrequencyList().get(0) <= 0)
+        {
+            throw new Exception("the channel needs at least one frequency");
+        }
+
+        mChannelModel.addChannel(c);
+        mPlaylistManager.schedulePlaylistSave();
+        return c;
+    }
+
+    /**
+     * Applies the keys present in the change to a channel (edit, new and clone all use this). Returns what changed.
+     */
+    private List<String> applyChanges(Channel c, Map<String,Object> change) throws Exception
+    {
         List<String> done = new ArrayList<>();
 
         if(change.containsKey("name"))
@@ -1663,7 +1772,8 @@ public class StatusReporter
         if(change.containsKey("aliasList"))
         {
             String v = str(change.get("aliasList"));
-            if(!v.isEmpty() && !mAliasModel.getListNames().contains(v))
+            //A new list name is allowed when the admin chose "New list..." - SDR-Trunk lists it once an alias uses it
+            if(!v.isEmpty() && !mAliasModel.getListNames().contains(v) && !Boolean.TRUE.equals(change.get("aliasListNew")))
             {
                 throw new Exception("there is no alias list called \"" + v + "\"");
             }
@@ -1775,13 +1885,159 @@ public class StatusReporter
             c.setDecodeConfiguration(dc);
         }
 
-        if(done.isEmpty())
+        if(change.containsKey("bandwidth") || change.containsKey("deemphasis") || change.containsKey("audioFilter") ||
+            change.containsKey("alc") || change.containsKey("talkgroup") || change.containsKey("squelchType") ||
+            change.containsKey("squelchCode"))
         {
-            return c.getName() + ": nothing to change";
+            if(!(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm))
+            {
+                throw new Exception("bandwidth, de-emphasis, filter, ALC, talkgroup and squelch are NBFM settings - this channel isn't NBFM");
+            }
+            applyNbfm(nbfm, change, done);
+            c.setDecodeConfiguration(nbfm);
         }
-        mPlaylistManager.schedulePlaylistSave();
-        return c.getName() + ": changed " + String.join(", ", done) + " (saved)" +
-            (c.isProcessing() ? " - restart the channel to use the new settings" : "");
+
+        return done;
+    }
+
+    /**
+     * NBFM settings for the scanner's channel forms, in the same terms as SDR-Trunk's NBFM editor
+     */
+    private static void putNbfm(Map<String,Object> m, io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm)
+    {
+        m.put("bandwidth", nbfm.getBandwidth() != null ? String.valueOf(nbfm.getBandwidth().getValue() / 1000.0) : null);
+        m.put("deemphasis", nbfm.getDeemphasis() == io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 ? "300" : "none");
+        m.put("audioFilter", nbfm.isAudioFilter());
+        m.put("alc", nbfm.isAudioALC());
+        m.put("talkgroup", nbfm.getTalkgroup());
+        String type = "none", code = "";
+        List<io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig> sq = nbfm.getSquelchDecoders();
+        if(sq != null && !sq.isEmpty() && sq.get(0) != null)
+        {
+            io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig s = sq.get(0);
+            if(s.getCTCSSCode() != null)
+            {
+                type = "ctcss";
+                code = String.format(java.util.Locale.US, "%.1f", s.getCTCSSCode().getFrequency());
+            }
+            else if(s.getDCSCode() != null)
+            {
+                type = "dcs";
+                String n = s.getDCSCode().name();   //N023 or I023
+                code = n.substring(1) + (n.startsWith("I") ? "I" : "");
+            }
+        }
+        m.put("squelchType", type);
+        m.put("squelchCode", code);
+    }
+
+    /**
+     * Applies NBFM settings. Squelch codes: CTCSS as the tone in Hz (100.0), DCS as the 3-digit code (023), with I on
+     * the end for inverted (023I) - the same codes SDR-Trunk's own lists offer.
+     */
+    private static void applyNbfm(io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm, Map<String,Object> change,
+                                  List<String> done) throws Exception
+    {
+        if(change.containsKey("bandwidth"))
+        {
+            String v = str(change.get("bandwidth"));
+            io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth bw = switch(v)
+            {
+                case "7.5" -> io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth.BW_7_5;
+                case "12.5" -> io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth.BW_12_5;
+                case "25", "25.0" -> io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth.BW_25_0;
+                default -> throw new Exception("NBFM bandwidth must be 7.5, 12.5 or 25 kHz");
+            };
+            nbfm.setBandwidth(bw);
+            done.add("bandwidth");
+        }
+        if(change.containsKey("deemphasis"))
+        {
+            nbfm.setDeemphasis("300".equals(str(change.get("deemphasis"))) ?
+                io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 : io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NONE);
+            done.add("de-emphasis");
+        }
+        if(change.containsKey("audioFilter"))
+        {
+            nbfm.setAudioFilter(Boolean.TRUE.equals(change.get("audioFilter")));
+            done.add("audio filter");
+        }
+        if(change.containsKey("alc"))
+        {
+            nbfm.setAudioALC(Boolean.TRUE.equals(change.get("alc")));
+            done.add("ALC");
+        }
+        if(change.containsKey("talkgroup"))
+        {
+            int tg;
+            try
+            {
+                tg = Integer.parseInt(str(change.get("talkgroup")));
+            }
+            catch(NumberFormatException nfe)
+            {
+                throw new Exception("talkgroup must be a number from 1 to 65535");
+            }
+            if(tg < 1 || tg > 65535)
+            {
+                throw new Exception("talkgroup must be a number from 1 to 65535");
+            }
+            nbfm.setTalkgroup(tg);
+            done.add("talkgroup");
+        }
+        if(change.containsKey("squelchType") || change.containsKey("squelchCode"))
+        {
+            String type = str(change.get("squelchType")).toLowerCase();
+            String code = str(change.get("squelchCode")).toUpperCase();
+            List<io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig> list = new ArrayList<>();
+            if(type.equals("ctcss"))
+            {
+                float hz;
+                try
+                {
+                    hz = Float.parseFloat(code);
+                }
+                catch(NumberFormatException nfe)
+                {
+                    throw new Exception("CTCSS tone must be in Hz, for example 100.0");
+                }
+                io.github.dsheirer.module.decode.squelch.ctcss.CTCSSCode ctcss =
+                    io.github.dsheirer.module.decode.squelch.ctcss.CTCSSCode.fromFrequency(hz);
+                if(!io.github.dsheirer.module.decode.squelch.ctcss.CTCSSCode.STANDARD_CODES.contains(ctcss))
+                {
+                    throw new Exception(code + " Hz isn't a standard CTCSS tone");
+                }
+                list.add(new io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig(
+                    io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig.SquelchType.CTCSS, ctcss.name()));
+            }
+            else if(type.equals("dcs"))
+            {
+                boolean inverted = code.endsWith("I");
+                String digits = code.replaceAll("[^0-9]", "");
+                while(digits.length() < 3)
+                {
+                    digits = "0" + digits;
+                }
+                io.github.dsheirer.module.decode.squelch.dcs.DCSCode dcs;
+                try
+                {
+                    dcs = io.github.dsheirer.module.decode.squelch.dcs.DCSCode.valueOf((inverted ? "I" : "N") + digits);
+                }
+                catch(IllegalArgumentException iae)
+                {
+                    throw new Exception(code + " isn't a DCS code - use the 3 digits, for example 023 (023I for inverted)");
+                }
+                list.add(new io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig(
+                    io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig.SquelchType.DCS, dcs.name()));
+            }
+            else
+            {
+                list.add(new io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig(
+                    io.github.dsheirer.module.decode.squelch.SquelchDecoderConfig.SquelchType.NONE, null));
+            }
+            nbfm.setSquelchDecoders(list);
+            done.add("squelch");
+        }
     }
 
     private static String str(Object o)
