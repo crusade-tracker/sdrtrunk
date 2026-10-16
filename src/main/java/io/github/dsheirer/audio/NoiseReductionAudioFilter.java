@@ -23,7 +23,7 @@ package io.github.dsheirer.audio;
  *
  * Short-time spectral noise reduction: the audio is cut into 32 ms frames (50% overlap, sqrt-Hann windows so the
  * frames add back up exactly). For each frequency bin it keeps learning the steady background level - the lowest
- * smoothed level seen, rising slowly - and turns that bin down by how much of it is noise (a Wiener gain with the
+ * smoothed level over about the last 1.5 seconds, near-silent frames left out - and turns that bin down by how much of it is noise (a Wiener gain with the
  * decision-directed estimate, which keeps the "musical" twinkle low). Speech keeps changing, so it stays; steady hiss
  * is turned down, but never below the level's floor - that floor is what keeps voices from sounding watery.
  *
@@ -71,6 +71,16 @@ public class NoiseReductionAudioFilter extends AbstractAudioFilter
 
     private final float[] mSmoothed = new float[BINS];
     private final float[] mNoise = new float[BINS];
+    //Minimum statistics: the lowest smoothed level over the last SUBWINDOWS x SUB_FRAMES frames (about 1.5 seconds)
+    private static final int SUB_FRAMES = 12;
+    private static final int SUBWINDOWS = 8;
+    private final float[][] mSubMin = new float[SUBWINDOWS][BINS];
+    private final float[] mCurrentMin = new float[BINS];
+    private int mSubIndex = 0;
+    private int mSubFrames = 0;
+    private int mSubFilled = 0;
+    //A frame quieter than this (about -60 dBFS) is silence, not hiss - it is not used to learn the hiss level
+    private static final float SILENT_FRAME_POWER = 1e-6f * N * N / 4f;
     private final float[] mPrevClean = new float[BINS];   //|gain * X|^2 of the previous frame
     private boolean mNoiseKnown = false;
     private long mLastNanos = 0;
@@ -145,7 +155,7 @@ public class NoiseReductionAudioFilter extends AbstractAudioFilter
         pushOut(new float[HOP], HOP);
         if(mNoiseKnown)
         {
-            System.arraycopy(mNoise, 0, mSmoothed, 0, BINS);
+            System.arraycopy(mNoise, 0, mSmoothed, 0, BINS);   //the hiss estimate carries over to the next transmission
         }
     }
 
@@ -204,13 +214,26 @@ public class NoiseReductionAudioFilter extends AbstractAudioFilter
         }
         fft(mRe, mIm, false);
 
+        float total = 0f;
+        for(int k = 0; k < BINS; k++)
+        {
+            total += mRe[k] * mRe[k] + mIm[k] * mIm[k];
+        }
+        boolean learn = total / BINS > SILENT_FRAME_POWER;
+        if(learn)
+        {
+            learnNoise();
+        }
+        if(!mNoiseKnown)
+        {
+            //nothing learned yet (silence so far) - pass the audio through untouched
+            pushWindowed();
+            return;
+        }
+
         for(int k = 0; k < BINS; k++)
         {
             float power = mRe[k] * mRe[k] + mIm[k] * mIm[k];
-
-            //noise estimate: lowest smoothed level, allowed to rise slowly (about 5 dB a second)
-            mSmoothed[k] = mNoiseKnown ? 0.75f * mSmoothed[k] + 0.25f * power : power;
-            mNoise[k] = mNoiseKnown ? Math.min(mNoise[k] * 1.018f, mSmoothed[k]) : mSmoothed[k];
             float noise = Math.max(mNoise[k] * 1.3f * mOverSubtract, 1e-12f);   //minimum sits below the mean noise
 
             //decision-directed a-priori SNR -> Wiener gain
@@ -231,10 +254,24 @@ public class NoiseReductionAudioFilter extends AbstractAudioFilter
                 mIm[N - k] = -mIm[k];
             }
         }
-        mNoiseKnown = true;
-
         fft(mRe, mIm, true);
+        overlapAdd();
+    }
 
+    /**
+     * Unprocessed frame: the windowed input goes back out as it came in.
+     */
+    private void pushWindowed()
+    {
+        for(int n = 0; n < N; n++)
+        {
+            mRe[n] = mFrame[n] * WINDOW[n];
+        }
+        overlapAdd();
+    }
+
+    private void overlapAdd()
+    {
         for(int n = 0; n < N; n++)
         {
             mOverlap[n] += mRe[n] * WINDOW[n];
@@ -242,6 +279,39 @@ public class NoiseReductionAudioFilter extends AbstractAudioFilter
         pushOut(mOverlap, HOP);
         System.arraycopy(mOverlap, HOP, mOverlap, 0, N - HOP);
         java.util.Arrays.fill(mOverlap, N - HOP, N, 0f);
+    }
+
+    /**
+     * Updates the hiss estimate from this frame (mRe / mIm hold its spectrum): smoothed level per bin, and the lowest
+     * smoothed level over about the last 1.5 seconds - so it follows the hiss up or down within that time.
+     */
+    private void learnNoise()
+    {
+        boolean first = !mNoiseKnown;
+        for(int k = 0; k < BINS; k++)
+        {
+            float power = mRe[k] * mRe[k] + mIm[k] * mIm[k];
+            mSmoothed[k] = first ? power : 0.8f * mSmoothed[k] + 0.2f * power;
+            mCurrentMin[k] = mSubFrames == 0 ? mSmoothed[k] : Math.min(mCurrentMin[k], mSmoothed[k]);
+        }
+        mSubFrames++;
+        if(mSubFrames >= SUB_FRAMES)
+        {
+            System.arraycopy(mCurrentMin, 0, mSubMin[mSubIndex], 0, BINS);
+            mSubIndex = (mSubIndex + 1) % SUBWINDOWS;
+            mSubFilled = Math.min(mSubFilled + 1, SUBWINDOWS);
+            mSubFrames = 0;
+        }
+        for(int k = 0; k < BINS; k++)
+        {
+            float min = mSubFrames > 0 ? mCurrentMin[k] : Float.MAX_VALUE;
+            for(int w = 0; w < mSubFilled; w++)
+            {
+                min = Math.min(min, mSubMin[w][k]);
+            }
+            mNoise[k] = min;
+        }
+        mNoiseKnown = true;
     }
 
     /**
