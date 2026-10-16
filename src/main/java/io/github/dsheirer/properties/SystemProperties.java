@@ -224,6 +224,10 @@ public class SystemProperties
                     {
                         sb.append( " nightly - ").append(timestamp);
                     }
+                    else if(version.startsWith("rod-"))
+                    {
+                        sb.append(" ").append(version);   //Rod builds: "sdrtrunk rod-016"
+                    }
                     else
                     {
                         sb.append(" v");

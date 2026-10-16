@@ -1512,10 +1512,32 @@ public class StatusReporter
         return out;
     }
 
+    /**
+     * Radio Reference service, logged in with the credentials stored in SDR-Trunk. SDR-Trunk itself only logs in when
+     * the Playlist Editor's Radio Reference tab is first built, so without this the admin page had nothing to ask
+     * until the Playlist Editor was opened. Same stored credentials and same login call as that tab.
+     */
+    private synchronized io.github.dsheirer.rrapi.RadioReferenceService rrService() throws Exception
+    {
+        io.github.dsheirer.service.radioreference.RadioReference rr = mPlaylistManager.getRadioReference();
+        String user = rr.userNameProperty().get();
+        if(user == null || user.isEmpty())
+        {
+            io.github.dsheirer.preference.radioreference.RadioReferencePreference pref = mUserPreferences.getRadioReferencePreference();
+            if(!pref.hasStoredCredentials() || pref.getAuthorizationInformation() == null)
+            {
+                throw new Exception("No Radio Reference login is stored in SDR-Trunk - open Playlist Editor > Radio Reference, " +
+                    "press Login and tick Store Login Credentials");
+            }
+            rr.setAuthorizationInformation(pref.getAuthorizationInformation());   //logs in (as the tab does)
+        }
+        return rr.getService();
+    }
+
     private Object runRRQuery(String action, String target) throws Exception
     {
         io.github.dsheirer.service.radioreference.RadioReference rr = mPlaylistManager.getRadioReference();
-        io.github.dsheirer.rrapi.RadioReferenceService service = rr.getService();
+        io.github.dsheirer.rrapi.RadioReferenceService service = rrService();
         io.github.dsheirer.preference.radioreference.RadioReferencePreference pref = mUserPreferences.getRadioReferencePreference();
         io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder = rrDecoder(service);
         String[] parts = (target == null ? "" : target).split("\\|", -1);
@@ -1859,7 +1881,7 @@ public class StatusReporter
         io.github.dsheirer.rrapi.RadioReferenceService service;
         try
         {
-            service = mPlaylistManager.getRadioReference().getService();
+            service = rrService();
         }
         catch(Exception e)
         {
@@ -1916,7 +1938,7 @@ public class StatusReporter
         io.github.dsheirer.rrapi.RadioReferenceService service;
         try
         {
-            service = mPlaylistManager.getRadioReference().getService();
+            service = rrService();
         }
         catch(Exception e)
         {
@@ -2018,7 +2040,7 @@ public class StatusReporter
         io.github.dsheirer.rrapi.RadioReferenceService service;
         try
         {
-            service = mPlaylistManager.getRadioReference().getService();
+            service = rrService();
         }
         catch(Exception e)
         {
