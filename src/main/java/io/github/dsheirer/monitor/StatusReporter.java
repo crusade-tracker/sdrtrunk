@@ -520,7 +520,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming"));
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction"));
             try
             {
                 body.put("streams", streamsReport());   //Streaming tab: configurations, status, fields (no passwords / keys)
@@ -3275,7 +3275,7 @@ public class StatusReporter
             done.add("data calls");
         }
 
-        if(change.containsKey("bandwidth") || change.containsKey("deemphasis") || change.containsKey("audioFilter") ||
+        if(change.containsKey("bandwidth") || change.containsKey("deemphasis") || change.containsKey("noiseReduction") || change.containsKey("audioFilter") ||
             change.containsKey("alc") || change.containsKey("talkgroup") || change.containsKey("squelchType") ||
             change.containsKey("squelchCode") || change.containsKey("amSquelch") || change.containsKey("amAutoTrack"))
         {
@@ -3775,6 +3775,7 @@ public class StatusReporter
     {
         m.put("bandwidth", nbfm.getBandwidth() != null ? String.valueOf(nbfm.getBandwidth().getValue() / 1000.0) : null);
         m.put("deemphasis", nbfm.getDeemphasis() == io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 ? "300" : "none");
+        m.put("noiseReduction", nbfm.getNoiseReduction() != null ? nbfm.getNoiseReduction().name() : "OFF");
         m.put("audioFilter", nbfm.isAudioFilter());
         m.put("alc", nbfm.isAudioALC());
         m.put("talkgroup", nbfm.getTalkgroup());
@@ -3824,6 +3825,11 @@ public class StatusReporter
             nbfm.setDeemphasis("300".equals(str(change.get("deemphasis"))) ?
                 io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 : io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NONE);
             done.add("de-emphasis");
+        }
+        if(change.containsKey("noiseReduction"))
+        {
+            nbfm.setNoiseReduction(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.fromName(str(change.get("noiseReduction"))));
+            done.add("noise reduction " + nbfm.getNoiseReduction());
         }
         if(change.containsKey("audioFilter"))
         {

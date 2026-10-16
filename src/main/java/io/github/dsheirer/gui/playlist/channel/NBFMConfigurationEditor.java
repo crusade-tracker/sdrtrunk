@@ -223,6 +223,14 @@ public class NBFMConfigurationEditor extends ChannelConfigurationEditor
             GridPane.setConstraints(mDcsCodeCombo, 4, 2);
             gridPane.getChildren().add(mDcsCodeCombo);
 
+            //Rod build: hiss reduction
+            Label noiseLabel = new Label("Noise Reduction");
+            GridPane.setHalignment(noiseLabel, HPos.RIGHT);
+            GridPane.setConstraints(noiseLabel, 0, 3);
+            gridPane.getChildren().add(noiseLabel);
+            GridPane.setConstraints(getNoiseReductionCombo(), 1, 3);
+            gridPane.getChildren().add(getNoiseReductionCombo());
+
             mDecoderPane.setContent(gridPane);
 
             //Special handling - the pill button doesn't like to set a selected state if the pane is not expanded,
@@ -237,6 +245,22 @@ public class NBFMConfigurationEditor extends ChannelConfigurationEditor
         }
 
         return mDecoderPane;
+    }
+
+    private ComboBox<io.github.dsheirer.audio.NoiseReductionAudioFilter.Level> mNoiseReductionCombo;
+
+    private ComboBox<io.github.dsheirer.audio.NoiseReductionAudioFilter.Level> getNoiseReductionCombo()
+    {
+        if(mNoiseReductionCombo == null)
+        {
+            mNoiseReductionCombo = new ComboBox<>();
+            mNoiseReductionCombo.getItems().addAll(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.values());
+            mNoiseReductionCombo.setValue(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF);
+            mNoiseReductionCombo.setTooltip(new Tooltip("Turns down steady background hiss. Higher removes more but can " +
+                "make voices sound watery - Low is safe on any repeater."));
+            mNoiseReductionCombo.valueProperty().addListener((obs, ov, nv) -> modifiedProperty().set(true));
+        }
+        return mNoiseReductionCombo;
     }
 
     private ComboBox<DeemphasisMode> getDeemphasisCombo()
@@ -551,6 +575,7 @@ public class NBFMConfigurationEditor extends ChannelConfigurationEditor
             getALCEnable().setSelected(decodeConfigNBFM.isAudioALC());
 
             getDeemphasisCombo().setValue(decodeConfigNBFM.getDeemphasis());
+            getNoiseReductionCombo().setValue(decodeConfigNBFM.getNoiseReduction());
 
             List<SquelchDecoderConfig> savedSquelchDecoders = decodeConfigNBFM.getSquelchDecoders();
             if(savedSquelchDecoders != null && !savedSquelchDecoders.isEmpty())
@@ -604,6 +629,7 @@ public class NBFMConfigurationEditor extends ChannelConfigurationEditor
             getALCEnable().setSelected(false);
 
             getDeemphasisCombo().setValue(DeemphasisMode.NONE);
+            getNoiseReductionCombo().setValue(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF);
             resetSquelchCodes();
         }
     }
@@ -643,6 +669,7 @@ public class NBFMConfigurationEditor extends ChannelConfigurationEditor
         config.setAudioALC(getALCEnable().isSelected());
 
         config.setDeemphasis(getDeemphasisCombo().getValue());
+        config.setNoiseReduction(getNoiseReductionCombo().getValue());
 
         List<SquelchDecoderConfig> squelchDecoders = new ArrayList<>();
         SquelchDecoderConfig.SquelchType selectedType = mSquelchTypeCombo.getValue();

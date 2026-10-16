@@ -469,6 +469,12 @@ public class DecoderFactory
             float cutoff = (float) decodeConfigNBFM.getDeemphasis().getCutoff();
             filterList.add(new DeemphasisFilter(8000, cutoff, 1.0f));
         }
+        //Rod build: hiss reduction, after the tone shaping and before the level control
+        if(decodeConfigNBFM.getNoiseReduction() != null &&
+            decodeConfigNBFM.getNoiseReduction() != io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF)
+        {
+            filterList.add(new io.github.dsheirer.audio.NoiseReductionAudioFilter(decodeConfigNBFM.getNoiseReduction()));
+        }
         if(decodeConfigNBFM.isAudioALC())
         {
             filterList.add(new AudioGainFilter(1, 10, 0.90f));

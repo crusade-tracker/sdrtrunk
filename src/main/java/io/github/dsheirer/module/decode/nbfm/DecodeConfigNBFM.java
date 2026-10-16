@@ -49,6 +49,8 @@ public class DecodeConfigNBFM extends DecodeConfigAnalog
 
      // FM de-emphasis
     private DeemphasisMode mDeemphasis = DeemphasisMode.NONE;
+    private io.github.dsheirer.audio.NoiseReductionAudioFilter.Level mNoiseReduction =
+        io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF;   //Rod build
 
 
     /**
@@ -280,5 +282,19 @@ public class DecodeConfigNBFM extends DecodeConfigAnalog
     public void setDeemphasis(DeemphasisMode deemphasis)
     {
         mDeemphasis = deemphasis != null ? deemphasis : DeemphasisMode.NONE;
+    }
+
+    /**
+     * Rod build: hiss (noise) reduction strength - Off, Low, Medium or High.
+     */
+    @JacksonXmlProperty(isAttribute = true, localName = "noiseReduction")
+    public io.github.dsheirer.audio.NoiseReductionAudioFilter.Level getNoiseReduction()
+    {
+        return mNoiseReduction;
+    }
+
+    public void setNoiseReduction(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level level)
+    {
+        mNoiseReduction = level != null ? level : io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF;
     }
 }
