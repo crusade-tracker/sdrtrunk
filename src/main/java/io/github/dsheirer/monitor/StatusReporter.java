@@ -131,9 +131,20 @@ public class StatusReporter
     private static final int FAST_INTERVAL_SECONDS = 1;
     private static final int MAX_EVENTS = 300;
     private String mLastProblem;
+    //Radio Reference (scanner admin's Radio Reference section): same login and lookups as SDR-Trunk's own tab
+    private final io.github.dsheirer.preference.UserPreferences mUserPreferences;
+    private io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder mRRDecoder;
+    private io.github.dsheirer.gui.playlist.radioreference.SiteEditor mRRSiteEditor;
+    private final java.util.concurrent.ExecutorService mRRExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "sdrtrunk-status-radioreference");
+        t.setDaemon(true);
+        return t;
+    });
 
-    public StatusReporter(TunerManager tunerManager, PlaylistManager playlistManager)
+    public StatusReporter(TunerManager tunerManager, PlaylistManager playlistManager,
+                          io.github.dsheirer.preference.UserPreferences userPreferences)
     {
+        mUserPreferences = userPreferences;
         mTunerManager = tunerManager;
         mChannelProcessingManager = playlistManager.getChannelProcessingManager();
         mBroadcastModel = playlistManager.getBroadcastModel();
@@ -483,7 +494,7 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
-            body.put("features", List.of("channel_create", "channel_delete"));   //the scanner shows New / Clone / Delete
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference"));   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -1001,6 +1012,26 @@ public class StatusReporter
 
             try
             {
+                if(action.startsWith("query_rr"))
+                {
+                    //Radio Reference answers can take a while the first time - answer with a later report
+                    mRRExecutor.execute(() -> {
+                        try
+                        {
+                            Object data = runRRQuery(action, target);
+                            result.put("ok", true);
+                            result.put("message", "");
+                            result.put("data", data);
+                        }
+                        catch(Throwable t)
+                        {
+                            result.put("ok", false);
+                            result.put("message", rrError(t));
+                        }
+                        mResults.add(result);
+                    });
+                    continue;
+                }
                 if(action.startsWith("query_"))
                 {
                     //Read-only questions from the admin page: answered with data, not logged
@@ -1191,6 +1222,11 @@ public class StatusReporter
                 }
                 return message;
             }
+            case "rr_create":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return rrCreate(spec);
+            }
             case "channel_delete":
             {
                 Channel c = findChannel(target);
@@ -1279,6 +1315,386 @@ public class StatusReporter
      * query_channel: the channel's settings exactly as SDR-Trunk saves them in the playlist (XML), plus its event history
      * (newest first) - what the channel editor and the channel's Events tab show.
      */
+    // ---------------- Radio Reference (the scanner admin's Radio Reference section) ----------------
+    // Same login, lookups and channel building as SDR-Trunk's own Radio Reference tab. Browsing answers are sent with
+    // a later report (mRRExecutor); creating a channel goes through the tab's own SiteEditor code.
+
+    private static int intAt(String[] parts, int index)
+    {
+        try
+        {
+            return index < parts.length && !parts[index].isBlank() ? Integer.parseInt(parts[index].trim()) : 0;
+        }
+        catch(NumberFormatException nfe)
+        {
+            return 0;
+        }
+    }
+
+    private static String rrError(Throwable t)
+    {
+        String m = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+        if(m.contains("set username or password"))
+        {
+            return "SDR-Trunk isn't logged in to Radio Reference - log in on its Radio Reference tab (Playlist Editor)";
+        }
+        return t instanceof io.github.dsheirer.rrapi.RadioReferenceException ? "Radio Reference: " + m : m;
+    }
+
+    private io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder rrDecoder(
+        io.github.dsheirer.rrapi.RadioReferenceService service) throws Exception
+    {
+        if(mRRDecoder == null)
+        {
+            mRRDecoder = new io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder(mUserPreferences,
+                service.getTypesMap(), service.getFlavorsMap(), service.getVoicesMap(), service.getTagsMap());
+        }
+        return mRRDecoder;
+    }
+
+    /**
+     * The tab's site editor, made once and never shown - only its create code and controls are used. JavaFX thread.
+     */
+    private io.github.dsheirer.gui.playlist.radioreference.SiteEditor rrSiteEditor()
+    {
+        if(mRRSiteEditor == null)
+        {
+            mRRSiteEditor = new io.github.dsheirer.gui.playlist.radioreference.SiteEditor(mUserPreferences, mPlaylistManager);
+        }
+        return mRRSiteEditor;
+    }
+
+    private List<Map<String,Object>> rrSystems(List<io.github.dsheirer.rrapi.type.System> systems,
+                                               io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder)
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        if(systems == null)
+        {
+            return out;
+        }
+        for(io.github.dsheirer.rrapi.type.System system: systems)
+        {
+            Map<String,Object> m = new LinkedHashMap<>();
+            m.put("id", system.getSystemId());
+            m.put("name", system.getName());
+            m.put("protocol", rrProtocol(decoder, system));
+            m.put("supported", decoder.hasSupportedProtocol(system));
+            out.add(m);
+        }
+        out.sort((a, b) -> String.valueOf(a.get("name")).compareToIgnoreCase(String.valueOf(b.get("name"))));
+        return out;
+    }
+
+    private static String rrProtocol(io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder,
+                                     io.github.dsheirer.rrapi.type.System system)
+    {
+        io.github.dsheirer.rrapi.type.Type type = decoder.getType(system);
+        io.github.dsheirer.rrapi.type.Flavor flavor = decoder.getFlavor(system);
+        return (type != null ? type.getName() : "Unknown") + (flavor != null ? " " + flavor.getName() : "");
+    }
+
+    private static <T> List<Map<String,Object>> idNames(List<T> items, java.util.function.Function<T,Integer> id,
+                                                       java.util.function.Function<T,String> name)
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        if(items != null)
+        {
+            for(T item: items)
+            {
+                Map<String,Object> m = new LinkedHashMap<>();
+                m.put("id", id.apply(item));
+                m.put("name", name.apply(item));
+                out.add(m);
+            }
+        }
+        out.sort((a, b) -> String.valueOf(a.get("name")).compareToIgnoreCase(String.valueOf(b.get("name"))));
+        return out;
+    }
+
+    private static boolean hasId(List<Map<String,Object>> list, int id)
+    {
+        for(Map<String,Object> m: list)
+        {
+            if(Integer.valueOf(id).equals(m.get("id")))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The rrapi System for a system id, from the county's or state's system list (the decoder works from these)
+     */
+    private io.github.dsheirer.rrapi.type.System rrFindSystem(io.github.dsheirer.rrapi.RadioReferenceService service,
+                                                             String level, int parentId, int systemId) throws Exception
+    {
+        List<io.github.dsheirer.rrapi.type.System> systems = "state".equals(level) ?
+            service.getStateInfo(parentId).getSystems() : service.getCountyInfo(parentId).getSystems();
+        if(systems != null)
+        {
+            for(io.github.dsheirer.rrapi.type.System system: systems)
+            {
+                if(system.getSystemId() == systemId)
+                {
+                    return system;
+                }
+            }
+        }
+        throw new Exception("system " + systemId + " isn't listed for that " + ("state".equals(level) ? "state" : "county"));
+    }
+
+    private List<io.github.dsheirer.gui.playlist.radioreference.EnrichedSite> rrSites(
+        io.github.dsheirer.rrapi.RadioReferenceService service, int systemId) throws Exception
+    {
+        List<io.github.dsheirer.gui.playlist.radioreference.EnrichedSite> out = new ArrayList<>();
+        for(io.github.dsheirer.rrapi.type.Site site: service.getSites(systemId))
+        {
+            io.github.dsheirer.rrapi.type.CountyInfo countyInfo = null;
+            int countyId = site.getCountyId();
+            //Same as the tab: 99,999 is RR's "county unknown" for temporary sites
+            if(countyId > 0 && countyId != 99999)
+            {
+                try
+                {
+                    countyInfo = service.getCountyInfo(countyId);
+                }
+                catch(Exception e)
+                {
+                    //county name only - leave it blank
+                }
+            }
+            out.add(new io.github.dsheirer.gui.playlist.radioreference.EnrichedSite(site, countyInfo));
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    private Object runRRQuery(String action, String target) throws Exception
+    {
+        io.github.dsheirer.service.radioreference.RadioReference rr = mPlaylistManager.getRadioReference();
+        io.github.dsheirer.rrapi.RadioReferenceService service = rr.getService();
+        io.github.dsheirer.preference.radioreference.RadioReferencePreference pref = mUserPreferences.getRadioReferencePreference();
+        io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder = rrDecoder(service);
+        String[] parts = (target == null ? "" : target).split("\\|", -1);
+
+        if("query_rr_loc".equals(action))
+        {
+            //target: country|state|county - empty parts start where SDR-Trunk's tab was last set; a chosen one is
+            //remembered there too, like choosing it on the tab
+            Map<String,Object> data = new LinkedHashMap<>();
+            data.put("user", pref.getUserName());
+            data.put("expires", rr.accountExpiresProperty().get());
+            data.put("login", String.valueOf(rr.getLoginStatus()));
+
+            List<Map<String,Object>> countries = idNames(service.getCountries(),
+                io.github.dsheirer.rrapi.type.Country::getCountryId, io.github.dsheirer.rrapi.type.Country::getName);
+            int countryId = intAt(parts, 0) > 0 ? intAt(parts, 0) : pref.getPreferredCountryId();
+            if(!hasId(countries, countryId))
+            {
+                countryId = 0;
+                for(Map<String,Object> c: countries)
+                {
+                    if("United States".equals(c.get("name")))
+                    {
+                        countryId = (Integer)c.get("id");
+                    }
+                }
+                if(countryId == 0 && !countries.isEmpty())
+                {
+                    countryId = (Integer)countries.get(0).get("id");
+                }
+            }
+            else if(intAt(parts, 0) > 0)
+            {
+                pref.setPreferredCountryId(countryId);
+            }
+            data.put("countries", countries);
+            data.put("countryId", countryId);
+
+            List<Map<String,Object>> states = countryId > 0 ? idNames(service.getCountryInfo(countryId).getStates(),
+                io.github.dsheirer.rrapi.type.State::getStateId, io.github.dsheirer.rrapi.type.State::getName) : new ArrayList<>();
+            int stateId = intAt(parts, 1) > 0 ? intAt(parts, 1) : pref.getPreferredStateId();
+            if(!hasId(states, stateId))
+            {
+                stateId = 0;
+            }
+            else if(intAt(parts, 1) > 0)
+            {
+                pref.setPreferredStateId(stateId);
+            }
+            data.put("states", states);
+            data.put("stateId", stateId);
+
+            List<Map<String,Object>> counties = new ArrayList<>();
+            List<Map<String,Object>> stateSystems = new ArrayList<>();
+            if(stateId > 0)
+            {
+                io.github.dsheirer.rrapi.type.StateInfo stateInfo = service.getStateInfo(stateId);
+                counties = idNames(stateInfo.getCounties(), io.github.dsheirer.rrapi.type.County::getCountyId,
+                    io.github.dsheirer.rrapi.type.County::getName);
+                stateSystems = rrSystems(stateInfo.getSystems(), decoder);
+            }
+            int countyId = intAt(parts, 2) > 0 ? intAt(parts, 2) : pref.getPreferredCountyId();
+            if(!hasId(counties, countyId))
+            {
+                countyId = 0;
+            }
+            else if(intAt(parts, 2) > 0)
+            {
+                pref.setPreferredCountyId(countyId);
+            }
+            data.put("counties", counties);
+            data.put("countyId", countyId);
+            data.put("countySystems", countyId > 0 ? rrSystems(service.getCountyInfo(countyId).getSystems(), decoder) : new ArrayList<>());
+            data.put("stateSystems", stateSystems);
+            data.put("countySystemId", pref.getPreferredSystemId(io.github.dsheirer.gui.playlist.radioreference.Level.COUNTY));
+            data.put("stateSystemId", pref.getPreferredSystemId(io.github.dsheirer.gui.playlist.radioreference.Level.STATE));
+            return data;
+        }
+
+        if("query_rr_system".equals(action))
+        {
+            //target: county|countyId|systemId or state|stateId|systemId
+            String level = parts.length > 0 ? parts[0] : "";
+            int parentId = intAt(parts, 1), systemId = intAt(parts, 2);
+            io.github.dsheirer.rrapi.type.System system = rrFindSystem(service, level, parentId, systemId);
+            pref.setPreferredSystemId(systemId, "state".equals(level) ? io.github.dsheirer.gui.playlist.radioreference.Level.STATE :
+                io.github.dsheirer.gui.playlist.radioreference.Level.COUNTY);
+            io.github.dsheirer.rrapi.type.SystemInformation info = service.getSystemInformation(systemId);
+            List<io.github.dsheirer.gui.playlist.radioreference.EnrichedSite> sites = rrSites(service, systemId);
+            List<Map<String,Object>> options = onFxThread(() -> {
+                List<Map<String,Object>> list = new ArrayList<>();
+                for(io.github.dsheirer.gui.playlist.radioreference.EnrichedSite site: sites)
+                {
+                    list.add(rrSiteEditor().describeForRemote(site, system, info, decoder));
+                }
+                return list;
+            });
+
+            Map<String,Object> data = new LinkedHashMap<>();
+            data.put("id", systemId);
+            data.put("name", system.getName());
+            data.put("protocol", rrProtocol(decoder, system));
+            io.github.dsheirer.rrapi.type.Voice voice = decoder.getVoice(system);
+            data.put("voice", voice != null ? voice.getName() : null);
+            data.put("supported", decoder.hasSupportedProtocol(system));
+            List<Map<String,Object>> siteList = new ArrayList<>();
+            for(int i = 0; i < sites.size(); i++)
+            {
+                io.github.dsheirer.gui.playlist.radioreference.EnrichedSite es = sites.get(i);
+                Map<String,Object> m = new LinkedHashMap<>();
+                m.put("id", es.getSite().getSiteId());
+                m.put("system", es.getSystemFormatted());
+                m.put("rfss", es.getRfssFormatted());
+                m.put("site", es.getSiteFormatted());
+                m.put("county", es.getCountyName());
+                m.put("name", es.getDescription());
+                List<Map<String,Object>> freqs = new ArrayList<>();
+                if(es.getSite().getSiteFrequencies() != null)
+                {
+                    for(io.github.dsheirer.rrapi.type.SiteFrequency sf: es.getSite().getSiteFrequencies())
+                    {
+                        if(sf.getFrequency() > 0.01)
+                        {
+                            Map<String,Object> f = new LinkedHashMap<>();
+                            String use = sf.getUse();
+                            f.put("type", use == null || use.isEmpty() ? "" : use.equalsIgnoreCase("a") ? "Alt Control" :
+                                use.equalsIgnoreCase("d") ? "Control" : use);
+                            f.put("lcn", sf.getLogicalChannelNumber());
+                            f.put("hz", (long)(sf.getFrequency() * 1E6));
+                            freqs.add(f);
+                        }
+                    }
+                }
+                //Same order as the tab: Control, Alt Control, then the rest, each by LCN
+                freqs.sort((a, b) -> {
+                    int ra = "Control".equals(a.get("type")) ? 0 : "Alt Control".equals(a.get("type")) ? 1 : 2;
+                    int rb = "Control".equals(b.get("type")) ? 0 : "Alt Control".equals(b.get("type")) ? 1 : 2;
+                    return ra != rb ? Integer.compare(ra, rb) : Integer.compare((Integer)a.get("lcn"), (Integer)b.get("lcn"));
+                });
+                m.put("freqs", freqs);
+                m.put("options", options.get(i));
+                siteList.add(m);
+            }
+            data.put("sites", siteList);
+            return data;
+        }
+
+        throw new Exception("unknown query '" + action + "' - this SDR-Trunk build is older than the scanner");
+    }
+
+    /**
+     * Create Channel Configuration(s) from the scanner's Radio Reference section, through the tab's own code
+     */
+    private String rrCreate(Map<String,Object> spec) throws Exception
+    {
+        io.github.dsheirer.rrapi.RadioReferenceService service;
+        try
+        {
+            service = mPlaylistManager.getRadioReference().getService();
+        }
+        catch(Exception e)
+        {
+            throw new Exception(rrError(e));
+        }
+        io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder = rrDecoder(service);
+        String level = str(spec.get("level"));
+        int parentId = intAt(new String[]{str(spec.get("parentId"))}, 0);
+        int systemId = intAt(new String[]{str(spec.get("systemId"))}, 0);
+        int siteId = intAt(new String[]{str(spec.get("siteId"))}, 0);
+
+        io.github.dsheirer.rrapi.type.System system;
+        io.github.dsheirer.rrapi.type.SystemInformation info;
+        io.github.dsheirer.gui.playlist.radioreference.EnrichedSite site = null;
+        try
+        {
+            system = rrFindSystem(service, level, parentId, systemId);
+            info = service.getSystemInformation(systemId);
+            for(io.github.dsheirer.gui.playlist.radioreference.EnrichedSite es: rrSites(service, systemId))
+            {
+                if(es.getSite().getSiteId() == siteId)
+                {
+                    site = es;
+                }
+            }
+        }
+        catch(io.github.dsheirer.rrapi.RadioReferenceException rre)
+        {
+            throw new Exception(rrError(rre));
+        }
+        if(site == null)
+        {
+            throw new Exception("site " + siteId + " isn't in that system any more");
+        }
+
+        List<Long> selected = new ArrayList<>();
+        if(spec.get("selected") instanceof List<?> list)
+        {
+            for(Object o: list)
+            {
+                selected.add(Long.parseLong(str(o)));
+            }
+        }
+        final io.github.dsheirer.gui.playlist.radioreference.EnrichedSite chosen = site;
+        List<Channel> added = onFxThread(() -> rrSiteEditor().createForRemote(chosen, system, info, decoder,
+            str(spec.get("frequencies")), Boolean.TRUE.equals(spec.get("forEach")), Boolean.TRUE.equals(spec.get("tdma")),
+            str(spec.get("system")), str(spec.get("site")), str(spec.get("name")), str(spec.get("aliasList")), selected));
+        if(added.isEmpty())
+        {
+            throw new Exception("nothing was created");
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        List<String> names = new ArrayList<>();
+        for(Channel c: added)
+        {
+            names.add(c.getName());
+        }
+        return (added.size() == 1 ? names.get(0) + " added" : added.size() + " channels added: " +
+            String.join(", ", names.size() > 12 ? names.subList(0, 12) : names) + (names.size() > 12 ? " ..." : "")) +
+            " (saved)";
+    }
+
     private Map<String,Object> runQuery(String action, String target) throws Exception
     {
         if("query_aliases".equals(action))

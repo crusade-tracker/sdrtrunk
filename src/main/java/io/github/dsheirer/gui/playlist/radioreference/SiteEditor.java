@@ -50,7 +50,9 @@ import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
 import javafx.animation.RotateTransition;
@@ -1400,5 +1402,161 @@ public class SiteEditor extends GridPane
         }
 
         return false;
+    }
+
+    /**
+     * Rod build: what the Create Channel Configuration(s) controls offer for a site, read back from this editor's own
+     * controls after setSite() - so the scanner's admin page shows the same choices and defaults as this tab.
+     * Call on the JavaFX thread.
+     */
+    public Map<String,Object> describeForRemote(EnrichedSite site, System system, SystemInformation systemInformation,
+                                                RadioReferenceDecoder decoder)
+    {
+        setSite(site, system, systemInformation, decoder);
+        Map<String,Object> m = new LinkedHashMap<>();
+        m.put("supported", !getCreateChannelConfigurationButton().isDisabled());
+        m.put("control", !getControlToggleButton().isDisabled());
+        m.put("controlLabel", getControlToggleButton().getText());
+        m.put("controlAlt", !getControlAndAltToggleButton().isDisabled());
+        m.put("selected", !getSelectedToggleButton().isDisabled());
+        m.put("all", !getAllToggleButton().isDisabled());
+        m.put("freqDefault", getControlToggleButton().isSelected() ? "control" :
+            getControlAndAltToggleButton().isSelected() ? "control_alt" :
+            getSelectedToggleButton().isSelected() ? "selected" : "all");
+        m.put("single", !getSingleToggleButton().isDisabled());
+        m.put("forEach", !getForEachToggleButton().isDisabled());
+        m.put("forEachDefault", getForEachToggleButton().isSelected());
+        m.put("phase2", getTdmaControlToggleButton().isVisible());
+        m.put("tdmaDefault", getTdmaControlToggleButton().isSelected());
+        m.put("system", getSystemTextField().getText());
+        m.put("site", getSiteTextField().getText());
+        m.put("name", getNameTextField().getText());
+        return m;
+    }
+
+    /**
+     * Rod build: Create Channel Configuration from the scanner's admin page. Sets this editor's controls the way the
+     * admin chose and runs the same create code as the button, so the channels come out exactly as this tab makes
+     * them (LSM for simulcast sites, "LCN n" names, Phase 2 settings ...). Returns the channels it added.
+     * Call on the JavaFX thread.
+     *
+     * @param frequencies control, control_alt, selected or all
+     * @param selectedHz the frequencies (Hz) for "selected"
+     */
+    public List<Channel> createForRemote(EnrichedSite site, System system, SystemInformation systemInformation,
+                                         RadioReferenceDecoder decoder, String frequencies, boolean forEach,
+                                         boolean tdma, String systemName, String siteName, String name,
+                                         String aliasList, List<Long> selectedHz) throws Exception
+    {
+        setSite(site, system, systemInformation, decoder);
+
+        if(getCreateChannelConfigurationButton().isDisabled())
+        {
+            throw new Exception(decoder.hasSupportedProtocol(system) ? "this site has no frequencies" :
+                "SDR-Trunk doesn't support this system's protocol");
+        }
+        if(aliasList == null || aliasList.isBlank())
+        {
+            throw new Exception("Channel configuration requires an alias list");
+        }
+
+        javafx.scene.control.ToggleButton frequencyButton = switch(frequencies == null ? "" : frequencies)
+        {
+            case "control" -> getControlToggleButton();
+            case "control_alt" -> getControlAndAltToggleButton();
+            case "selected" -> getSelectedToggleButton();
+            case "all" -> getAllToggleButton();
+            default -> throw new Exception("unknown frequencies choice '" + frequencies + "'");
+        };
+        if(frequencyButton.isDisabled())
+        {
+            throw new Exception("\"" + frequencyButton.getText() + "\" isn't available for this site");
+        }
+        frequencyButton.setSelected(true);
+
+        javafx.scene.control.ToggleButton configurationButton = forEach ? getForEachToggleButton() : getSingleToggleButton();
+        if(configurationButton.isDisabled())
+        {
+            throw new Exception("\"" + configurationButton.getText() + "\" isn't available for this site");
+        }
+        configurationButton.setSelected(true);
+
+        if(getTdmaControlToggleButton().isVisible())
+        {
+            (tdma ? getTdmaControlToggleButton() : getFdmaControlToggleButton()).setSelected(true);
+        }
+
+        getSystemTextField().setText(systemName);
+        getSiteTextField().setText(siteName);
+        getNameTextField().setText(name);
+        getAliasListNameComboBox().setValue(aliasList);
+
+        //The checks the create code would otherwise show as a pop-up
+        List<SiteFrequency> items = getSiteFrequencyTableView().getItems();
+        boolean hybrid = decoder.isHybridMotorolaP25(system);
+        if(frequencyButton == getControlToggleButton() && !hybrid && !hasControl(items))
+        {
+            throw new Exception("Site Has No Control Channel(s)");
+        }
+        if(frequencyButton == getControlAndAltToggleButton() && !hasControl(items) && !hasAlternate(items))
+        {
+            throw new Exception("Site Has No Control or Alternate Channel(s)");
+        }
+        if(frequencyButton == getSelectedToggleButton())
+        {
+            getSiteFrequencyTableView().getSelectionModel().clearSelection();
+            for(int i = 0; i < items.size(); i++)
+            {
+                if(selectedHz != null && selectedHz.contains(getFrequency(items.get(i))))
+                {
+                    getSiteFrequencyTableView().getSelectionModel().select(i);
+                }
+            }
+            if(getSiteFrequencyTableView().getSelectionModel().getSelectedItems().isEmpty())
+            {
+                throw new Exception("Please select frequencies");
+            }
+        }
+
+        List<Channel> before = new ArrayList<>(mPlaylistManager.getChannelModel().getChannels());
+        boolean goTo = getGoToChannelEditorCheckBox().isSelected();
+        getGoToChannelEditorCheckBox().setSelected(false);   //nobody is at this screen
+        try
+        {
+            if(frequencyButton == getControlToggleButton())
+            {
+                if(hybrid)
+                {
+                    createHybridP25VoiceChannels();
+                }
+                else
+                {
+                    createControlChannel();
+                }
+            }
+            else if(frequencyButton == getControlAndAltToggleButton())
+            {
+                createControlAndAlternatesChannel();
+            }
+            else
+            {
+                createChannels(frequencyButton == getSelectedToggleButton());
+            }
+        }
+        finally
+        {
+            getGoToChannelEditorCheckBox().setSelected(goTo);
+        }
+
+        List<Channel> added = new ArrayList<>();
+        for(Channel channel: new ArrayList<>(mPlaylistManager.getChannelModel().getChannels()))
+        {
+            if(!before.contains(channel))
+            {
+                channel.setAliasListName(aliasList);   //also for a new list name the combo box doesn't hold yet
+                added.add(channel);
+            }
+        }
+        return added;
     }
 }
