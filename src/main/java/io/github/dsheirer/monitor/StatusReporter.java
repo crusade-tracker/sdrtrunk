@@ -508,7 +508,16 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders"));   //the scanner shows New / Clone / Delete, Radio Reference
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming"));
+            try
+            {
+                body.put("streams", streamsReport());   //Streaming tab: configurations, status, fields (no passwords / keys)
+                body.put("streamTypes", streamTypes());
+            }
+            catch(Exception streamEx)
+            {
+                //changed while reading - next report
+            }   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -1284,6 +1293,99 @@ public class StatusReporter
                     return null;
                 });
                 return name + " deleted (saved)";
+            }
+            case "alias_list_create":
+            {
+                String name = aliasListName(parseValue(value).get("name"));
+                return onFxThread(() -> {
+                    if(mAliasModel.getListNames().contains(name))
+                    {
+                        throw new Exception("there's already an alias list called '" + name + "'");
+                    }
+                    mAliasModel.addAliasList(name);
+                    return "Alias list " + name + " created - SDR-Trunk keeps an empty list only until it restarts, " +
+                        "so give it an alias or a channel";
+                });
+            }
+            case "alias_list_rename":
+            {
+                String newName = aliasListName(parseValue(value).get("name"));
+                return onFxThread(() -> {
+                    if(target == null || !mAliasModel.getListNames().contains(target))
+                    {
+                        throw new Exception("there's no alias list called '" + target + "'");
+                    }
+                    if(AliasModel.NO_ALIAS_LIST.equals(target))
+                    {
+                        throw new Exception("You cannot rename " + target + ".");
+                    }
+                    if(mAliasModel.getListNames().contains(newName))
+                    {
+                        throw new Exception("there's already an alias list called '" + newName + "'");
+                    }
+                    mPlaylistManager.renameAliasList(target, newName);   //its aliases and the channels using it
+                    mPlaylistManager.schedulePlaylistSave();
+                    return "Alias list " + target + " renamed to " + newName + " (saved)";
+                });
+            }
+            case "alias_list_delete":
+            {
+                return onFxThread(() -> {
+                    if(target == null || !mAliasModel.getListNames().contains(target))
+                    {
+                        throw new Exception("there's no alias list called '" + target + "'");
+                    }
+                    if(AliasModel.NO_ALIAS_LIST.equals(target))
+                    {
+                        throw new Exception("You cannot delete " + target + ".");
+                    }
+                    long aliases = mAliasModel.getAliases().stream().filter(x -> target.equals(x.getAliasListName())).count();
+                    long channels = mChannelModel.getChannels().stream().filter(c -> target.equals(c.getAliasListName())).count();
+                    mPlaylistManager.deleteAliasList(target);   //its aliases go; channels using it are left with none
+                    mPlaylistManager.schedulePlaylistSave();
+                    return "Alias list " + target + " deleted with " + aliases + " alias" + (aliases == 1 ? "" : "es") +
+                        (channels > 0 ? "; " + channels + " channel" + (channels == 1 ? "" : "s") + " now have no alias list" : "") + " (saved)";
+                });
+            }
+            case "stream_create":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return onFxThread(() -> streamCreate(spec));
+            }
+            case "stream_edit":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return onFxThread(() -> streamEdit(target, spec));
+            }
+            case "stream_enable":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return onFxThread(() -> {
+                    BroadcastConfiguration config = findStream(target);
+                    boolean on = Boolean.TRUE.equals(spec.get("on"));
+                    if(!on)
+                    {
+                        guardReportStream(config, "turn off");
+                    }
+                    config.setEnabled(on);
+                    mBroadcastModel.process(new io.github.dsheirer.audio.broadcast.BroadcastEvent(config,
+                        io.github.dsheirer.audio.broadcast.BroadcastEvent.Event.CONFIGURATION_CHANGE));
+                    return config.getName() + " " + (on ? "enabled" : "disabled") + " (saved)";
+                });
+            }
+            case "stream_delete":
+            {
+                return onFxThread(() -> {
+                    BroadcastConfiguration config = findStream(target);
+                    guardReportStream(config, "delete");
+                    mBroadcastModel.removeBroadcastConfiguration(config);
+                    return config.getName() + " deleted (saved)";
+                });
+            }
+            case "stream_aliases":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return onFxThread(() -> streamAliases(target, spec));
             }
             case "alias_set":
             {
@@ -2259,6 +2361,489 @@ public class StatusReporter
         }
         Collections.sort(ids);
         return alias.getAliasListName() + "\u0001" + alias.getName() + "\u0001" + String.join(",", ids);
+    }
+
+    // ---------------------------------------------------------------- alias lists and streaming (admin page)
+
+    /**
+     * Alias list name as SDR-Trunk's New / Rename Alias List dialogs take it: trimmed, 1 to 25 characters.
+     */
+    private static String aliasListName(Object value) throws Exception
+    {
+        String name = value == null ? "" : String.valueOf(value).trim();
+        if(name.isEmpty())
+        {
+            throw new Exception("no alias list name given");
+        }
+        if(name.length() > 25)
+        {
+            throw new Exception("alias list names are 25 characters at most (as in SDR-Trunk)");
+        }
+        if(AliasModel.NO_ALIAS_LIST.equals(name))
+        {
+            throw new Exception("that name is reserved by SDR-Trunk");
+        }
+        return name;
+    }
+
+    /**
+     * Fields of each stream type, as SDR-Trunk's Streaming tab editor for that type shows them (label, kind).
+     * Kinds: text, int, bool, secret (never sent to the scanner - only whether it is set), sec (seconds; stored as ms).
+     */
+    private static final Map<String,List<String[]>> STREAM_FIELDS = new LinkedHashMap<>();
+    static
+    {
+        String[] host = {"host", "Server", "text"}, port = {"port", "Port", "int"}, pass = {"password", "Password", "secret"},
+            age = {"maxAge", "Max Recording Age (seconds)", "sec"}, delay = {"delay", "Delay (seconds)", "sec"};
+        STREAM_FIELDS.put("BROADCASTIFY", List.of(host, port, new String[]{"mountPoint", "Mount Point", "text"}, pass, age, delay,
+            new String[]{"feedId", "Feed ID", "int"}, new String[]{"verbose", "Verbose Logging", "bool"}));
+        STREAM_FIELDS.put("BROADCASTIFY_CALL", List.of(new String[]{"apiKey", "API Key", "secret"}, new String[]{"systemId", "System ID", "int"},
+            new String[]{"host", "Broadcastify URL", "text"}, age, new String[]{"testEnabled", "Send Periodic Keep-Alive", "bool"},
+            new String[]{"testInterval", "Ping Interval (minutes)", "int"}));
+        List<String[]> icecast = List.of(host, port, new String[]{"mountPoint", "Mount Point", "text"}, new String[]{"inline", "Inline Metadata", "bool"},
+            new String[]{"userName", "User Name", "text"}, pass, age, delay, new String[]{"description", "Description", "text"},
+            new String[]{"genre", "Genre", "text"}, new String[]{"url", "URL", "text"});
+        STREAM_FIELDS.put("ICECAST_HTTP", icecast);
+        STREAM_FIELDS.put("ICECAST_TCP", icecast);
+        STREAM_FIELDS.put("RDIOSCANNER_CALL", List.of(new String[]{"apiKey", "API Key", "secret"}, new String[]{"systemId", "System ID", "int"},
+            new String[]{"host", "Scanner URL", "text"}, age));
+        STREAM_FIELDS.put("OPENMHZ", List.of(new String[]{"apiKey", "API Key", "secret"}, new String[]{"systemName", "System Short Name", "text"},
+            new String[]{"host", "OpenMHz Upload Server (API)", "text"}, age));
+        STREAM_FIELDS.put("SHOUTCAST_V1", List.of(new String[]{"public", "Public", "bool"}, host, port, pass, age, delay,
+            new String[]{"description", "Description", "text"}, new String[]{"genre", "Genre", "text"}));
+        STREAM_FIELDS.put("SHOUTCAST_V2", List.of(new String[]{"public", "Public", "bool"}, host, port, new String[]{"userId", "User ID", "text"},
+            new String[]{"streamId", "Stream ID", "int"}, pass, age, delay, new String[]{"url", "Description", "text"},
+            new String[]{"genre", "Genre", "text"}));
+    }
+    private static final String RDIO_API_PATH = "/api/call-upload";
+
+    /**
+     * The stream types, in the order of SDR-Trunk's New menu (Broadcastify Feed is listed too - the Streaming tab offers
+     * those from the Radio Reference account; here it is made by hand).
+     */
+    private List<Map<String,Object>> streamTypes()
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        List<io.github.dsheirer.audio.broadcast.BroadcastServerType> order = new ArrayList<>();
+        order.add(io.github.dsheirer.audio.broadcast.BroadcastServerType.BROADCASTIFY);
+        for(io.github.dsheirer.audio.broadcast.BroadcastServerType t: io.github.dsheirer.audio.broadcast.BroadcastServerType.values())
+        {
+            if(t != io.github.dsheirer.audio.broadcast.BroadcastServerType.BROADCASTIFY && t != io.github.dsheirer.audio.broadcast.BroadcastServerType.UNKNOWN)
+            {
+                order.add(t);
+            }
+        }
+        for(io.github.dsheirer.audio.broadcast.BroadcastServerType t: order)
+        {
+            List<String[]> fields = STREAM_FIELDS.get(t.name());
+            if(fields == null)
+            {
+                continue;
+            }
+            Map<String,Object> m = new LinkedHashMap<>();
+            m.put("type", t.name());
+            m.put("label", t.toString());
+            List<List<String>> f = new ArrayList<>();
+            fields.forEach(x -> f.add(List.of(x[0], x[1], x[2])));
+            m.put("fields", f);
+            out.add(m);
+        }
+        return out;
+    }
+
+    private List<Map<String,Object>> streamsReport()
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        RdioScannerConfiguration reporting = getConfiguration();
+        List<Alias> aliases = new ArrayList<>(mAliasModel.getAliases());
+        for(io.github.dsheirer.audio.broadcast.ConfiguredBroadcast cb: new ArrayList<>(mBroadcastModel.getConfiguredBroadcasts()))
+        {
+            BroadcastConfiguration config = cb.getBroadcastConfiguration();
+            Map<String,Object> m = new LinkedHashMap<>();
+            m.put("id", config.getId());
+            m.put("name", config.getName());
+            m.put("type", config.getBroadcastServerType() != null ? config.getBroadcastServerType().name() : null);
+            m.put("typeLabel", config.getBroadcastServerType() != null ? config.getBroadcastServerType().toString() : null);
+            m.put("format", config.getBroadcastFormat() != null ? config.getBroadcastFormat().toString() : null);
+            m.put("enabled", config.isEnabled());
+            m.put("state", cb.broadcastStateProperty().get() != null ? cb.broadcastStateProperty().get().toString() : null);
+            m.put("lastError", cb.lastBadBroadcastStateProperty().get() != null ? cb.lastBadBroadcastStateProperty().get().toString() : null);
+            if(cb.hasAudioBroadcaster())
+            {
+                m.put("streamed", cb.getAudioBroadcaster().getStreamedAudioCount());
+                m.put("queued", cb.getAudioBroadcaster().getAudioQueueSize());
+                m.put("agedOff", cb.getAudioBroadcaster().getAgedOffAudioCount());
+                m.put("errors", cb.getAudioBroadcaster().getAudioErrorCount());
+            }
+            m.put("reporting", config == reporting);   //the stream SDR-Trunk reports to this scanner through
+            String name = config.getName();
+            m.put("aliasCount", name == null ? 0 : aliases.stream().filter(a -> a.hasBroadcastChannel(name)).count());
+            Map<String,Object> values = new LinkedHashMap<>();
+            Map<String,Object> secrets = new LinkedHashMap<>();
+            List<String[]> fields = STREAM_FIELDS.get(m.get("type"));
+            if(fields != null)
+            {
+                for(String[] f: fields)
+                {
+                    Object v = streamGet(config, f[0]);
+                    if("secret".equals(f[2]))
+                    {
+                        secrets.put(f[0], v != null && !String.valueOf(v).isEmpty());
+                    }
+                    else
+                    {
+                        values.put(f[0], v);
+                    }
+                }
+            }
+            m.put("values", values);
+            m.put("secrets", secrets);
+            out.add(m);
+        }
+        return out;
+    }
+
+    private static Object streamGet(BroadcastConfiguration c, String key)
+    {
+        switch(key)
+        {
+            case "host":
+                String host = c.getHost();
+                return c instanceof RdioScannerConfiguration && host != null ? host.replace(RDIO_API_PATH, "") : host;
+            case "port": return c.getPort();
+            case "password": return c.getPassword();
+            case "maxAge": return c.getMaximumRecordingAge() / 1000;
+            case "delay": return c.getDelay() / 1000;
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.broadcastify.BroadcastifyFeedConfiguration b)
+        {
+            if("feedId".equals(key)) return b.getFeedID();
+            if("verbose".equals(key)) return b.isVerboseLogging();
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.icecast.IcecastConfiguration i)
+        {
+            switch(key)
+            {
+                case "mountPoint": return i.getMountPoint();
+                case "inline": return i.getInline();
+                case "userName": return i.getUserName();
+                case "description": return i.getDescription();
+                case "genre": return i.getGenre();
+                case "url": return i.getURL();
+            }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.broadcastify.BroadcastifyCallConfiguration b)
+        {
+            switch(key)
+            {
+                case "apiKey": return b.getApiKey();
+                case "systemId": return b.getSystemID();
+                case "testEnabled": return b.isTestEnabled();
+                case "testInterval": return b.getTestInterval();
+            }
+        }
+        if(c instanceof RdioScannerConfiguration r)
+        {
+            if("apiKey".equals(key)) return r.getApiKey();
+            if("systemId".equals(key)) return r.getSystemID();
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.openmhz.OpenMHzConfiguration o)
+        {
+            if("apiKey".equals(key)) return o.getApiKey();
+            if("systemName".equals(key)) return o.getSystemName();
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.shoutcast.v1.ShoutcastV1Configuration v1)
+        {
+            switch(key)
+            {
+                case "public": return v1.isPublic();
+                case "description": return v1.getDescription();
+                case "genre": return v1.getGenre();
+            }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.shoutcast.v2.ShoutcastV2Configuration v2)
+        {
+            switch(key)
+            {
+                case "public": return v2.isPublic();
+                case "userId": return v2.getUserID();
+                case "streamId": return v2.getStreamID();
+                case "url": return v2.getURL();
+                case "genre": return v2.getGenre();
+            }
+        }
+        return null;
+    }
+
+    private static String asText(Object v)
+    {
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    private static int asInt(Object v, String label) throws Exception
+    {
+        try
+        {
+            return v instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(v).trim());
+        }
+        catch(NumberFormatException nfe)
+        {
+            throw new Exception(label + " must be a whole number");
+        }
+    }
+
+    private static void streamSet(BroadcastConfiguration c, String key, String label, Object v) throws Exception
+    {
+        boolean on = Boolean.TRUE.equals(v) || "true".equals(String.valueOf(v));
+        switch(key)
+        {
+            case "host":
+                String host = asText(v);
+                if(c instanceof RdioScannerConfiguration && host != null && !host.isEmpty())
+                {
+                    host = host.replace(RDIO_API_PATH, "") + RDIO_API_PATH;   //as the Radio Scanner editor saves it
+                }
+                c.setHost(host);
+                return;
+            case "port": c.setPort(asInt(v, label)); return;
+            case "password": c.setPassword(asText(v)); return;
+            case "maxAge": c.setMaximumRecordingAge(asInt(v, label) * 1000L); return;
+            case "delay": c.setDelay(asInt(v, label) * 1000L); return;
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.broadcastify.BroadcastifyFeedConfiguration b)
+        {
+            if("feedId".equals(key)) { b.setFeedID(asInt(v, label)); return; }
+            if("verbose".equals(key)) { b.setVerboseLogging(on); return; }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.icecast.IcecastConfiguration i)
+        {
+            switch(key)
+            {
+                case "mountPoint": i.setMountPoint(asText(v)); return;
+                case "inline": i.setInline(on); return;
+                case "userName": i.setUserName(asText(v)); return;
+                case "description": i.setDescription(asText(v)); return;
+                case "genre": i.setGenre(asText(v)); return;
+                case "url": i.setURL(asText(v)); return;
+            }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.broadcastify.BroadcastifyCallConfiguration b)
+        {
+            switch(key)
+            {
+                case "apiKey": b.setApiKey(asText(v)); return;
+                case "systemId": b.setSystemID(asInt(v, label)); return;
+                case "testEnabled": b.setTestEnabled(on); return;
+                case "testInterval": b.setTestInterval(asInt(v, label)); return;
+            }
+        }
+        if(c instanceof RdioScannerConfiguration r)
+        {
+            if("apiKey".equals(key)) { r.setApiKey(asText(v)); return; }
+            if("systemId".equals(key)) { r.setSystemID(asInt(v, label)); return; }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.openmhz.OpenMHzConfiguration o)
+        {
+            if("apiKey".equals(key)) { o.setApiKey(asText(v)); return; }
+            if("systemName".equals(key)) { o.setSystemName(asText(v)); return; }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.shoutcast.v1.ShoutcastV1Configuration v1)
+        {
+            switch(key)
+            {
+                case "public": v1.setPublic(on); return;
+                case "description": v1.setDescription(asText(v)); return;
+                case "genre": v1.setGenre(asText(v)); return;
+            }
+        }
+        if(c instanceof io.github.dsheirer.audio.broadcast.shoutcast.v2.ShoutcastV2Configuration v2)
+        {
+            switch(key)
+            {
+                case "public": v2.setPublic(on); return;
+                case "userId": v2.setUserID(asText(v)); return;
+                case "streamId": v2.setStreamID(asInt(v, label)); return;
+                case "url": v2.setURL(asText(v)); return;
+                case "genre": v2.setGenre(asText(v)); return;
+            }
+        }
+        throw new Exception("field " + key + " doesn't belong to this stream type");
+    }
+
+    /**
+     * Applies the admin's field values. Secrets are only changed when a new one was typed (sent as a non-empty value).
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> applyStreamFields(BroadcastConfiguration config, Map<String,Object> spec) throws Exception
+    {
+        List<String> changed = new ArrayList<>();
+        Map<String,Object> values = spec.get("values") instanceof Map<?,?> m ? (Map<String,Object>)m : Map.of();
+        List<String[]> fields = STREAM_FIELDS.get(config.getBroadcastServerType().name());
+        if(fields == null)
+        {
+            throw new Exception("this stream type can't be edited from the admin page");
+        }
+        for(String[] f: fields)
+        {
+            if(!values.containsKey(f[0]))
+            {
+                continue;
+            }
+            Object v = values.get(f[0]);
+            if("secret".equals(f[2]) && (v == null || String.valueOf(v).isEmpty()))
+            {
+                continue;   //left blank = keep the one SDR-Trunk has
+            }
+            streamSet(config, f[0], f[1], v);
+            changed.add(f[1]);
+        }
+        return changed;
+    }
+
+    private BroadcastConfiguration findStream(String name) throws Exception
+    {
+        for(BroadcastConfiguration config: new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()))
+        {
+            if(name != null && name.equals(config.getName()))
+            {
+                return config;
+            }
+        }
+        throw new Exception("there's no stream called '" + name + "' in SDR-Trunk");
+    }
+
+    /**
+     * The scanner's admin page talks to SDR-Trunk through this stream's server and API key - turning it off, deleting
+     * it or pointing it elsewhere from the admin page would cut the admin page off. That's done in SDR-Trunk itself.
+     */
+    private void guardReportStream(BroadcastConfiguration config, String what) throws Exception
+    {
+        if(config == getConfiguration())
+        {
+            throw new Exception("can't " + what + " " + config.getName() + " from here - it is the stream SDR-Trunk uses to " +
+                "report to this scanner, so the admin page would lose SDR-Trunk. Do it in SDR-Trunk's Streaming tab.");
+        }
+    }
+
+    private String streamCreate(Map<String,Object> spec) throws Exception
+    {
+        io.github.dsheirer.audio.broadcast.BroadcastServerType type;
+        try
+        {
+            type = io.github.dsheirer.audio.broadcast.BroadcastServerType.valueOf(String.valueOf(spec.get("type")));
+        }
+        catch(IllegalArgumentException iae)
+        {
+            throw new Exception("unknown stream type " + spec.get("type"));
+        }
+        if(!STREAM_FIELDS.containsKey(type.name()))
+        {
+            throw new Exception("unknown stream type " + type);
+        }
+        //Same as the Streaming tab's New menu: a fresh MP3 configuration of that type
+        BroadcastConfiguration config = io.github.dsheirer.audio.broadcast.BroadcastFactory.getConfiguration(type,
+            io.github.dsheirer.audio.broadcast.BroadcastFormat.MP3);
+        String name = asText(spec.get("name"));
+        if(name != null && !name.isEmpty())
+        {
+            config.setName(name);
+        }
+        applyStreamFields(config, spec);
+        config.setEnabled(Boolean.TRUE.equals(spec.get("enabled")));
+        mBroadcastModel.addBroadcastConfiguration(config);   //makes the name unique like SDR-Trunk does; saves
+        return config.getName() + " (" + type + ") added" + (config.isEnabled() ? " and enabled" : "") + " (saved)";
+    }
+
+    private String streamEdit(String target, Map<String,Object> spec) throws Exception
+    {
+        BroadcastConfiguration config = findStream(target);
+        if(config == getConfiguration() && spec.get("values") instanceof Map<?,?> v &&
+            ((v.containsKey("host") && !String.valueOf(v.get("host")).trim().equals(String.valueOf(streamGet(config, "host")))) ||
+             (v.get("apiKey") != null && !String.valueOf(v.get("apiKey")).isEmpty())))
+        {
+            guardReportStream(config, "change the Scanner URL or API Key of");
+        }
+        if(Boolean.FALSE.equals(spec.get("enabled")))
+        {
+            guardReportStream(config, "turn off");
+        }
+        String previousName = config.getName();
+        String newName = asText(spec.get("name"));
+        if(newName != null && !newName.isEmpty() && !newName.equals(previousName))
+        {
+            if(!mBroadcastModel.isUniqueName(newName, config))
+            {
+                throw new Exception("there's already a stream called '" + newName + "'");
+            }
+        }
+        List<String> changed = applyStreamFields(config, spec);
+        if(spec.get("enabled") instanceof Boolean on && on != config.isEnabled())
+        {
+            config.setEnabled(on);
+            changed.add(on ? "enabled" : "disabled");
+        }
+        String renamed = "";
+        if(newName != null && !newName.isEmpty() && !newName.equals(previousName))
+        {
+            config.setName(newName);
+            //SDR-Trunk asks "update aliases to new stream name?" - from here they always follow, or they'd stop streaming
+            if(mAliasModel.hasAliasesWithBroadcastChannel(previousName))
+            {
+                mAliasModel.updateBroadcastChannel(previousName, newName);
+                renamed = " - its aliases follow the new name";
+            }
+            changed.add("Name");
+        }
+        //Same as the editor's Save: restarts the stream with the new settings, and saves
+        mBroadcastModel.process(new io.github.dsheirer.audio.broadcast.BroadcastEvent(config,
+            io.github.dsheirer.audio.broadcast.BroadcastEvent.Event.CONFIGURATION_CHANGE));
+        mPlaylistManager.schedulePlaylistSave();
+        return config.getName() + ": " + (changed.isEmpty() ? "saved" : String.join(", ", changed) + " changed") + renamed + " (saved)";
+    }
+
+    @SuppressWarnings("unchecked")
+    private String streamAliases(String target, Map<String,Object> spec) throws Exception
+    {
+        BroadcastConfiguration config = findStream(target);
+        String stream = config.getName();
+        List<String> add = spec.get("add") instanceof List<?> l ? (List<String>)l : List.of();
+        List<String> remove = spec.get("remove") instanceof List<?> l ? (List<String>)l : List.of();
+        int added = 0, removed = 0, missing = 0;
+        for(String key: add)
+        {
+            try
+            {
+                Alias alias = findAlias(key);
+                if(!alias.hasBroadcastChannel(stream))
+                {
+                    alias.addAliasID(new io.github.dsheirer.alias.id.broadcast.BroadcastChannel(stream));
+                    added++;
+                }
+            }
+            catch(Exception notFound)
+            {
+                missing++;
+            }
+        }
+        for(String key: remove)
+        {
+            try
+            {
+                Alias alias = findAlias(key);
+                if(alias.hasBroadcastChannel(stream))
+                {
+                    alias.removeBroadcastChannel(stream);
+                    removed++;
+                }
+            }
+            catch(Exception notFound)
+            {
+                missing++;
+            }
+        }
+        mPlaylistManager.schedulePlaylistSave();
+        return stream + ": " + added + " alias" + (added == 1 ? "" : "es") + " added, " + removed + " removed" +
+            (missing > 0 ? " - " + missing + " not found (changed in SDR-Trunk since the list was read)" : "") + " (saved)";
     }
 
     private Map<String,Object> readAliases()
