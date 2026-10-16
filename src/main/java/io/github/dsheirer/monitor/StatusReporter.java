@@ -495,7 +495,20 @@ public class StatusReporter
             body.put("channels", channels());
             body.put("configured", configured);
             body.put("channelOptions", channelOptions());
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections"));   //the scanner shows New / Clone / Delete, Radio Reference
+            try
+            {
+                List<String> maps = new ArrayList<>();
+                for(io.github.dsheirer.controller.channel.map.ChannelMap map: new ArrayList<>(mPlaylistManager.getChannelMapModel().getChannelMaps()))
+                {
+                    maps.add(map.getName());
+                }
+                body.put("channelMaps", maps);   //for MPT1327 channels
+            }
+            catch(Exception mapEx)
+            {
+                //changed while reading - next report
+            }
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders"));   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -947,6 +960,7 @@ public class StatusReporter
                 {
                     putNbfm(m, nbfm);
                 }
+                putOtherDecoders(m, c.getDecodeConfiguration());
             }
             //Logging / Recording / Additional Decoders for the channel form
             List<String> logs = new ArrayList<>(), records = new ArrayList<>(), aux = new ArrayList<>();
@@ -2493,18 +2507,17 @@ public class StatusReporter
         else
         {
             String decoder = str(spec.get("decoder")).toUpperCase();
-            io.github.dsheirer.module.decode.DecoderType type;
-            if(decoder.equals("P25_PHASE1"))
+            io.github.dsheirer.module.decode.DecoderType type = null;
+            for(io.github.dsheirer.module.decode.DecoderType t: io.github.dsheirer.module.decode.DecoderType.PRIMARY_DECODERS)
             {
-                type = io.github.dsheirer.module.decode.DecoderType.P25_PHASE1;
+                if(t.name().equals(decoder))
+                {
+                    type = t;
+                }
             }
-            else if(decoder.equals("NBFM"))
+            if(type == null)
             {
-                type = io.github.dsheirer.module.decode.DecoderType.NBFM;
-            }
-            else
-            {
-                throw new Exception("new channels can be P25 Phase 1 or NBFM for now - not \"" + decoder + "\"");
+                throw new Exception("SDR-Trunk has no channel decoder called \"" + decoder + "\"");
             }
             c = new Channel();
             c.setDecodeConfiguration(io.github.dsheirer.module.decode.DecoderFactory.getDecodeConfiguration(type));
@@ -2637,52 +2650,64 @@ public class StatusReporter
             c.setSourceConfiguration(sc);
         }
 
-        if(change.containsKey("modulation") || change.containsKey("poolSize") || change.containsKey("ignoreDataCalls"))
+        io.github.dsheirer.module.decode.config.DecodeConfiguration dc = c.getDecodeConfiguration();
+        if(change.containsKey("modulation"))
         {
-            io.github.dsheirer.module.decode.config.DecodeConfiguration dc = c.getDecodeConfiguration();
-            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 p25))
+            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1))
             {
-                throw new Exception("modulation, traffic channels and data calls are P25 settings - this channel isn't P25");
+                throw new Exception("modulation is a P25 Phase 1 setting");
             }
-            if(change.containsKey("modulation"))
+            String mod = str(change.get("modulation")).toUpperCase();
+            p1.setModulation(mod.equals("LSM") || mod.equals("CQPSK") ? io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK
+                : io.github.dsheirer.module.decode.p25.phase1.Modulation.C4FM);
+            done.add("modulation");
+        }
+        if(change.containsKey("poolSize"))
+        {
+            int n = Integer.parseInt(str(change.get("poolSize")));
+            if(n < 0 || n > 50)
             {
-                if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1))
-                {
-                    throw new Exception("modulation is a P25 Phase 1 setting");
-                }
-                String mod = str(change.get("modulation")).toUpperCase();
-                p1.setModulation(mod.equals("LSM") || mod.equals("CQPSK") ? io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK
-                    : io.github.dsheirer.module.decode.p25.phase1.Modulation.C4FM);
-                done.add("modulation");
+                throw new Exception("traffic channels must be 0 to 50");
             }
-            if(change.containsKey("poolSize"))
-            {
-                int n = Integer.parseInt(str(change.get("poolSize")));
-                if(n < 0 || n > 50)
-                {
-                    throw new Exception("traffic channels must be 0 to 50");
-                }
-                p25.setTrafficChannelPoolSize(n);
-                done.add("traffic channels");
-            }
-            if(change.containsKey("ignoreDataCalls"))
-            {
-                p25.setIgnoreDataCalls(Boolean.TRUE.equals(change.get("ignoreDataCalls")));
-                done.add("data calls");
-            }
-            c.setDecodeConfiguration(dc);
+            if(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 x) x.setTrafficChannelPoolSize(n);
+            else if(dc instanceof io.github.dsheirer.module.decode.dmr.DecodeConfigDMR x) x.setTrafficChannelPoolSize(n);
+            else if(dc instanceof io.github.dsheirer.module.decode.nxdn.DecodeConfigNXDN x) x.setTrafficChannelPoolSize(n);
+            else if(dc instanceof io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327 x) x.setTrafficChannelPoolSize(n);
+            else throw new Exception("traffic channels are a trunked system setting (P25, DMR, NXDN, MPT1327)");
+            done.add("traffic channels");
+        }
+        if(change.containsKey("ignoreDataCalls"))
+        {
+            boolean on = Boolean.TRUE.equals(change.get("ignoreDataCalls"));
+            if(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 x) x.setIgnoreDataCalls(on);
+            else if(dc instanceof io.github.dsheirer.module.decode.dmr.DecodeConfigDMR x) x.setIgnoreDataCalls(on);
+            else if(dc instanceof io.github.dsheirer.module.decode.nxdn.DecodeConfigNXDN x) x.setIgnoreDataCalls(on);
+            else throw new Exception("ignore data calls is a P25, DMR and NXDN setting");
+            done.add("data calls");
         }
 
         if(change.containsKey("bandwidth") || change.containsKey("deemphasis") || change.containsKey("audioFilter") ||
             change.containsKey("alc") || change.containsKey("talkgroup") || change.containsKey("squelchType") ||
-            change.containsKey("squelchCode"))
+            change.containsKey("squelchCode") || change.containsKey("amSquelch") || change.containsKey("amAutoTrack"))
         {
-            if(!(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm))
+            if(dc instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm)
             {
-                throw new Exception("bandwidth, de-emphasis, filter, ALC, talkgroup and squelch are NBFM settings - this channel isn't NBFM");
+                applyNbfm(nbfm, change, done);
             }
-            applyNbfm(nbfm, change, done);
-            c.setDecodeConfiguration(nbfm);
+            else if(dc instanceof io.github.dsheirer.module.decode.am.DecodeConfigAM am)
+            {
+                applyAm(am, change, done);
+            }
+            else
+            {
+                throw new Exception("bandwidth, talkgroup and squelch are NBFM / AM settings - this channel is neither");
+            }
+        }
+
+        applyOtherDecoders(dc, change, done);
+        if(dc != null)
+        {
+            c.setDecodeConfiguration(dc);
         }
 
         if(change.containsKey("logs") || change.containsKey("records") || change.containsKey("aux"))
@@ -2838,9 +2863,320 @@ public class StatusReporter
             m.put("logs", logs);
             m.put("records", records);
             m.put("aux", aux);
+            //SDR-Trunk's defaults for a new channel of this type (what its New channel button starts with)
+            Map<String,Object> defaults = new LinkedHashMap<>();
+            try
+            {
+                io.github.dsheirer.module.decode.config.DecodeConfiguration d =
+                    io.github.dsheirer.module.decode.DecoderFactory.getDecodeConfiguration(type);
+                if(d instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 p25)
+                {
+                    defaults.put("poolSize", p25.getTrafficChannelPoolSize());
+                    defaults.put("ignoreDataCalls", p25.getIgnoreDataCalls());
+                }
+                if(d instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1)
+                {
+                    defaults.put("modulation", p1.getModulation() == io.github.dsheirer.module.decode.p25.phase1.Modulation.CQPSK ? "LSM" : "C4FM");
+                }
+                if(d instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm)
+                {
+                    putNbfm(defaults, nbfm);
+                }
+                putOtherDecoders(defaults, d);
+            }
+            catch(Exception e)
+            {
+                //no defaults for this type
+            }
+            m.put("defaults", defaults);
             out.put(type.name(), m);
         }
         return out;
+    }
+
+    /**
+     * AM settings, as SDR-Trunk's AM editor: bandwidth (3, 5, 8.33, 15, 25 kHz), talkgroup, squelch threshold (dB,
+     * -110 to 0) and squelch auto-track
+     */
+    private static void applyAm(io.github.dsheirer.module.decode.am.DecodeConfigAM am, Map<String,Object> change,
+                                List<String> done) throws Exception
+    {
+        if(change.containsKey("bandwidth"))
+        {
+            String v = str(change.get("bandwidth"));
+            io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth bw = null;
+            for(io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth b:
+                io.github.dsheirer.module.decode.analog.DecodeConfigAnalog.Bandwidth.AM_BANDWIDTHS)
+            {
+                if(Math.abs(b.getValue() / 1000.0 - Double.parseDouble(v)) < 0.01)
+                {
+                    bw = b;
+                }
+            }
+            if(bw == null)
+            {
+                throw new Exception("AM bandwidth must be 3, 5, 8.33, 15 or 25 kHz");
+            }
+            am.setBandwidth(bw);
+            done.add("bandwidth");
+        }
+        if(change.containsKey("talkgroup"))
+        {
+            int tg = Integer.parseInt(str(change.get("talkgroup")));
+            if(tg < 1 || tg > 65535)
+            {
+                throw new Exception("talkgroup must be a number from 1 to 65535");
+            }
+            am.setTalkgroup(tg);
+            done.add("talkgroup");
+        }
+        if(change.containsKey("amSquelch"))
+        {
+            int db = Integer.parseInt(str(change.get("amSquelch")));
+            if(db < -110 || db > 0)
+            {
+                throw new Exception("squelch threshold must be -110 to 0 dB");
+            }
+            am.setSquelchThreshold(db);
+            done.add("squelch threshold");
+        }
+        if(change.containsKey("amAutoTrack"))
+        {
+            am.setSquelchAutoTrack(Boolean.TRUE.equals(change.get("amAutoTrack")));
+            done.add("squelch auto-track");
+        }
+    }
+
+    private static List<List<Object>> rows(Object o)
+    {
+        List<List<Object>> out = new ArrayList<>();
+        if(o instanceof List<?> list)
+        {
+            for(Object r: list)
+            {
+                if(r instanceof List<?> row)
+                {
+                    out.add(new ArrayList<>(row));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The rest of SDR-Trunk's channel editors: DMR, LTR / LTR-Net, MPT1327, NXDN and P25 Phase 2 settings
+     */
+    private void applyOtherDecoders(io.github.dsheirer.module.decode.config.DecodeConfiguration dc, Map<String,Object> change,
+                                    List<String> done) throws Exception
+    {
+        //DMR
+        if(change.containsKey("ignoreCrc") || change.containsKey("compressedTalkgroups") || change.containsKey("timeslotMap"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.dmr.DecodeConfigDMR dmr))
+            {
+                throw new Exception("CRC checksums, compressed talkgroups and the LCN map are DMR settings");
+            }
+            if(change.containsKey("ignoreCrc"))
+            {
+                dmr.setIgnoreCRCChecksums(Boolean.TRUE.equals(change.get("ignoreCrc")));
+                done.add("ignore CRC checksums");
+            }
+            if(change.containsKey("compressedTalkgroups"))
+            {
+                dmr.setUseCompressedTalkgroups(Boolean.TRUE.equals(change.get("compressedTalkgroups")));
+                done.add("compressed talkgroups");
+            }
+            if(change.containsKey("timeslotMap"))
+            {
+                List<io.github.dsheirer.module.decode.dmr.channel.TimeslotFrequency> map = new ArrayList<>();
+                for(List<Object> r: rows(change.get("timeslotMap")))
+                {
+                    io.github.dsheirer.module.decode.dmr.channel.TimeslotFrequency t =
+                        new io.github.dsheirer.module.decode.dmr.channel.TimeslotFrequency();
+                    t.setNumber(Integer.parseInt(str(r.get(0))));
+                    t.setDownlinkFrequency(Long.parseLong(str(r.get(1))));
+                    t.setUplinkFrequency(r.size() > 2 && !str(r.get(2)).isEmpty() ? Long.parseLong(str(r.get(2))) : 0);
+                    map.add(t);
+                }
+                dmr.setTimeslotMap(map);
+                done.add("LCN map");
+            }
+        }
+        //LTR / LTR-Net
+        if(change.containsKey("direction"))
+        {
+            io.github.dsheirer.message.MessageDirection d = io.github.dsheirer.message.MessageDirection.valueOf(str(change.get("direction")));
+            if(dc instanceof io.github.dsheirer.module.decode.ltrstandard.DecodeConfigLTRStandard x) x.setMessageDirection(d);
+            else if(dc instanceof io.github.dsheirer.module.decode.ltrnet.DecodeConfigLTRNet x) x.setMessageDirection(d);
+            else throw new Exception("direction is an LTR / LTR-Net setting");
+            done.add("direction");
+        }
+        //MPT1327
+        if(change.containsKey("channelMap") || change.containsKey("callTimeout"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327 mpt))
+            {
+                throw new Exception("channel map and call timeout are MPT1327 settings");
+            }
+            if(change.containsKey("channelMap"))
+            {
+                String name = str(change.get("channelMap"));
+                if(!name.isEmpty() && mPlaylistManager.getChannelMapModel().getChannelMap(name) == null)
+                {
+                    throw new Exception("there is no channel map called \"" + name + "\"");
+                }
+                mpt.setChannelMapName(name.isEmpty() ? null : name);
+                done.add("channel map");
+            }
+            if(change.containsKey("callTimeout"))
+            {
+                int t = Integer.parseInt(str(change.get("callTimeout")));
+                if(t < io.github.dsheirer.module.decode.config.DecodeConfiguration.CALL_TIMEOUT_MINIMUM ||
+                    t > io.github.dsheirer.module.decode.config.DecodeConfiguration.CALL_TIMEOUT_MAXIMUM)
+                {
+                    throw new Exception("call timeout must be 1 to 180 seconds");
+                }
+                mpt.setCallTimeoutSeconds(t);
+                done.add("call timeout");
+            }
+        }
+        //NXDN
+        if(change.containsKey("nxdnMode") || change.containsKey("ignoreEncrypted") || change.containsKey("encoding") ||
+            change.containsKey("nxdnMap"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.nxdn.DecodeConfigNXDN nxdn))
+            {
+                throw new Exception("mode, encrypted calls, talker alias encoding and the channel map are NXDN settings");
+            }
+            if(change.containsKey("nxdnMode"))
+            {
+                nxdn.setTransmissionMode(io.github.dsheirer.module.decode.nxdn.layer3.type.TransmissionMode.valueOf(str(change.get("nxdnMode"))));
+                done.add("mode");
+            }
+            if(change.containsKey("ignoreEncrypted"))
+            {
+                nxdn.setIgnoreEncryptedCalls(Boolean.TRUE.equals(change.get("ignoreEncrypted")));
+                done.add("encrypted calls");
+            }
+            if(change.containsKey("encoding"))
+            {
+                nxdn.setEncoding(io.github.dsheirer.module.decode.nxdn.layer3.proprietary.Encoding.valueOf(str(change.get("encoding"))));
+                done.add("talker alias encoding");
+            }
+            if(change.containsKey("nxdnMap"))
+            {
+                List<io.github.dsheirer.module.decode.nxdn.channel.ChannelFrequency> map = new ArrayList<>();
+                for(List<Object> r: rows(change.get("nxdnMap")))
+                {
+                    map.add(new io.github.dsheirer.module.decode.nxdn.channel.ChannelFrequency(Integer.parseInt(str(r.get(0))),
+                        Long.parseLong(str(r.get(1))), r.size() > 2 && !str(r.get(2)).isEmpty() ? Long.parseLong(str(r.get(2))) : 0));
+                }
+                nxdn.setChannelMap(map);
+                done.add("channel map");
+            }
+        }
+        //P25 Phase 2 - like its editor, saving sets the WACN / System / NAC (0 = learn them from the control channel)
+        if(change.containsKey("wacn") || change.containsKey("p2System") || change.containsKey("nac"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase2.DecodeConfigP25Phase2 p2))
+            {
+                throw new Exception("WACN, System and NAC are P25 Phase 2 settings");
+            }
+            io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters cur = p2.getScrambleParameters();
+            int wacn = change.containsKey("wacn") ? hex(change.get("wacn"), "WACN", 0xFFFFF) : cur != null ? cur.getWACN() : 0;
+            int sys = change.containsKey("p2System") ? hex(change.get("p2System"), "System", 0xFFF) : cur != null ? cur.getSystem() : 0;
+            int nac = change.containsKey("nac") ? hex(change.get("nac"), "NAC", 0xFFF) : cur != null ? cur.getNAC() : 0;
+            p2.setAutoDetectScrambleParameters(false);
+            p2.setScrambleParameters(new io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters(wacn, sys, nac));
+            done.add("WACN / System / NAC");
+        }
+    }
+
+    private static int hex(Object o, String what, int max) throws Exception
+    {
+        String v = str(o).replaceFirst("(?i)^0x", "");
+        try
+        {
+            int n = v.isEmpty() ? 0 : Integer.parseInt(v, 16);
+            if(n < 0 || n > max)
+            {
+                throw new NumberFormatException();
+            }
+            return n;
+        }
+        catch(NumberFormatException nfe)
+        {
+            throw new Exception(what + " must be hex, 0 to " + Integer.toHexString(max).toUpperCase());
+        }
+    }
+
+    /**
+     * The other decoders' settings for the scanner's channel form (P25 traffic channels / data calls and NBFM are
+     * reported separately)
+     */
+    private static void putOtherDecoders(Map<String,Object> m, io.github.dsheirer.module.decode.config.DecodeConfiguration dc)
+    {
+        if(dc instanceof io.github.dsheirer.module.decode.am.DecodeConfigAM am)
+        {
+            m.put("bandwidth", am.getBandwidth() != null ? String.valueOf(am.getBandwidth().getValue() / 1000.0) : null);
+            m.put("talkgroup", am.getTalkgroup());
+            m.put("amSquelch", am.getSquelchThreshold());
+            m.put("amAutoTrack", am.isSquelchAutoTrack());
+        }
+        else if(dc instanceof io.github.dsheirer.module.decode.dmr.DecodeConfigDMR dmr)
+        {
+            m.put("poolSize", dmr.getTrafficChannelPoolSize());
+            m.put("ignoreDataCalls", dmr.getIgnoreDataCalls());
+            m.put("ignoreCrc", dmr.getIgnoreCRCChecksums());
+            m.put("compressedTalkgroups", dmr.isUseCompressedTalkgroups());
+            List<List<Long>> map = new ArrayList<>();
+            if(dmr.getTimeslotMap() != null)
+            {
+                for(io.github.dsheirer.module.decode.dmr.channel.TimeslotFrequency t: dmr.getTimeslotMap())
+                {
+                    map.add(List.of((long)t.getNumber(), t.getDownlinkFrequency(), t.getUplinkFrequency()));
+                }
+            }
+            m.put("timeslotMap", map);
+        }
+        else if(dc instanceof io.github.dsheirer.module.decode.ltrstandard.DecodeConfigLTRStandard ltr)
+        {
+            m.put("direction", String.valueOf(ltr.getMessageDirection()));
+        }
+        else if(dc instanceof io.github.dsheirer.module.decode.ltrnet.DecodeConfigLTRNet ltr)
+        {
+            m.put("direction", String.valueOf(ltr.getMessageDirection()));
+        }
+        else if(dc instanceof io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327 mpt)
+        {
+            m.put("poolSize", mpt.getTrafficChannelPoolSize());
+            m.put("channelMap", mpt.getChannelMapName());
+            m.put("callTimeout", mpt.getCallTimeoutSeconds());
+        }
+        else if(dc instanceof io.github.dsheirer.module.decode.nxdn.DecodeConfigNXDN nxdn)
+        {
+            m.put("poolSize", nxdn.getTrafficChannelPoolSize());
+            m.put("ignoreDataCalls", nxdn.isIgnoreDataCalls());
+            m.put("ignoreEncrypted", nxdn.isIgnoreEncryptedCalls());
+            m.put("nxdnMode", String.valueOf(nxdn.getTransmissionMode()));
+            m.put("encoding", nxdn.getEncoding() != null ? nxdn.getEncoding().name() : null);
+            List<List<Long>> map = new ArrayList<>();
+            if(nxdn.getChannelMap() != null)
+            {
+                for(io.github.dsheirer.module.decode.nxdn.channel.ChannelFrequency f: nxdn.getChannelMap())
+                {
+                    map.add(List.of((long)f.getChannel(), f.getDownlink(), f.getUplink()));
+                }
+            }
+            m.put("nxdnMap", map);
+        }
+        if(dc instanceof io.github.dsheirer.module.decode.p25.phase2.DecodeConfigP25Phase2 p2)
+        {
+            io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters sp = p2.getScrambleParameters();
+            m.put("wacn", Integer.toHexString(sp != null ? sp.getWACN() : 0).toUpperCase());
+            m.put("p2System", Integer.toHexString(sp != null ? sp.getSystem() : 0).toUpperCase());
+            m.put("nac", Integer.toHexString(sp != null ? sp.getNAC() : 0).toUpperCase());
+        }
     }
 
     /**
