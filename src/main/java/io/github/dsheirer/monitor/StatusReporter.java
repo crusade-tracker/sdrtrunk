@@ -494,7 +494,7 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference"));   //the scanner shows New / Clone / Delete, Radio Reference
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups"));   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -1222,6 +1222,11 @@ public class StatusReporter
                 }
                 return message;
             }
+            case "rr_alias_import":
+            {
+                Map<String,Object> spec = parseValue(value);
+                return rrAliasImport(spec);
+            }
             case "rr_create":
             {
                 Map<String,Object> spec = parseValue(value);
@@ -1621,7 +1626,178 @@ public class StatusReporter
             return data;
         }
 
+        if("query_rr_talkgroups".equals(action))
+        {
+            //target: county|countyId|systemId|aliasList - the Talkgroup View, with the alias each talkgroup already
+            //has in that alias list (same match as the tab)
+            String level = parts.length > 0 ? parts[0] : "";
+            int parentId = intAt(parts, 1), systemId = intAt(parts, 2);
+            String aliasListName = parts.length > 3 ? parts[3] : "";
+            io.github.dsheirer.rrapi.type.System system = rrFindSystem(service, level, parentId, systemId);
+            List<io.github.dsheirer.rrapi.type.Talkgroup> talkgroups = service.getTalkgroups(systemId);
+            List<io.github.dsheirer.rrapi.type.TalkgroupCategory> categories = service.getTalkgroupCategories(systemId);
+            Map<Integer,io.github.dsheirer.rrapi.type.TalkgroupCategory> categoryById = new HashMap<>();
+            List<Map<String,Object>> categoryList = new ArrayList<>();
+            if(categories != null)
+            {
+                List<io.github.dsheirer.rrapi.type.TalkgroupCategory> sorted = new ArrayList<>(categories);
+                sorted.sort(java.util.Comparator.comparingInt(io.github.dsheirer.rrapi.type.TalkgroupCategory::getSort));
+                for(io.github.dsheirer.rrapi.type.TalkgroupCategory category: sorted)
+                {
+                    categoryById.put(category.getTalkgroupCategoryId(), category);
+                    Map<String,Object> m = new LinkedHashMap<>();
+                    m.put("id", category.getTalkgroupCategoryId());
+                    m.put("name", category.getName());
+                    categoryList.add(m);
+                }
+            }
+            List<io.github.dsheirer.rrapi.type.Talkgroup> list = talkgroups != null ? talkgroups : new ArrayList<>();
+            List<Map<String,Object>> talkgroupList = onFxThread(() -> {
+                io.github.dsheirer.alias.AliasList aliasList = aliasListName.isEmpty() ? null : mAliasModel.getAliasList(aliasListName);
+                List<Map<String,Object>> out = new ArrayList<>();
+                for(io.github.dsheirer.rrapi.type.Talkgroup tg: list)
+                {
+                    Map<String,Object> m = new LinkedHashMap<>();
+                    m.put("id", tg.getTalkgroupId());
+                    m.put("value", decoder.getTalkgroupValue(tg, system));
+                    m.put("label", decoder.format(tg, system));
+                    m.put("alpha", tg.getAlphaTag());
+                    m.put("description", tg.getDescription());
+                    m.put("mode", tg.getMode());
+                    m.put("categoryId", tg.getTalkgroupCategoryId());
+                    io.github.dsheirer.rrapi.type.TalkgroupCategory category = categoryById.get(tg.getTalkgroupCategoryId());
+                    m.put("category", category != null ? category.getName() : null);
+                    io.github.dsheirer.gui.playlist.radioreference.TalkgroupEncryption enc =
+                        io.github.dsheirer.gui.playlist.radioreference.TalkgroupEncryption.lookup(tg.getEncryptionState());
+                    m.put("encryption", enc.toString());
+                    m.put("encrypted", enc == io.github.dsheirer.gui.playlist.radioreference.TalkgroupEncryption.FULL);
+                    String alias = null;
+                    if(aliasList != null)
+                    {
+                        List<Alias> found = aliasList.getAliases(decoder.getIdentifier(tg, system));
+                        if(!found.isEmpty())
+                        {
+                            alias = found.get(0).getName();
+                        }
+                    }
+                    m.put("alias", alias);
+                    out.add(m);
+                }
+                return out;
+            });
+            Map<String,Object> data = new LinkedHashMap<>();
+            data.put("systemId", systemId);
+            data.put("aliasList", aliasListName);
+            data.put("categories", categoryList);
+            data.put("talkgroups", talkgroupList);
+            return data;
+        }
+
         throw new Exception("unknown query '" + action + "' - this SDR-Trunk build is older than the scanner");
+    }
+
+    /**
+     * Talkgroup View import from the scanner's Radio Reference section - the tab's Import All Talkgroups (the ids the
+     * admin's filter shows) or Create Talkgroup Alias for one (with its own name and group). Aliases are made the way
+     * the tab makes them; a talkgroup that already has an alias in the list is left alone.
+     */
+    private String rrAliasImport(Map<String,Object> spec) throws Exception
+    {
+        io.github.dsheirer.rrapi.RadioReferenceService service;
+        try
+        {
+            service = mPlaylistManager.getRadioReference().getService();
+        }
+        catch(Exception e)
+        {
+            throw new Exception(rrError(e));
+        }
+        io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder decoder = rrDecoder(service);
+        String level = str(spec.get("level"));
+        int parentId = intAt(new String[]{str(spec.get("parentId"))}, 0);
+        int systemId = intAt(new String[]{str(spec.get("systemId"))}, 0);
+        String aliasListName = str(spec.get("aliasList"));
+        if(aliasListName.isEmpty())
+        {
+            throw new Exception("An alias list is required to create aliases");
+        }
+        boolean muteEncrypted = Boolean.TRUE.equals(spec.get("muteEncrypted"));
+        java.util.Set<Integer> wanted = new java.util.HashSet<>();
+        if(spec.get("talkgroupIds") instanceof List<?> ids)
+        {
+            for(Object o: ids)
+            {
+                wanted.add(Integer.parseInt(str(o)));
+            }
+        }
+        if(wanted.isEmpty())
+        {
+            throw new Exception("no talkgroups to import");
+        }
+        String singleName = spec.containsKey("name") ? str(spec.get("name")) : null;
+        String singleGroup = spec.containsKey("group") ? str(spec.get("group")) : null;
+
+        io.github.dsheirer.rrapi.type.System system;
+        List<io.github.dsheirer.rrapi.type.Talkgroup> talkgroups;
+        Map<Integer,String> categoryNames = new HashMap<>();
+        try
+        {
+            system = rrFindSystem(service, level, parentId, systemId);
+            talkgroups = service.getTalkgroups(systemId);
+            List<io.github.dsheirer.rrapi.type.TalkgroupCategory> categories = service.getTalkgroupCategories(systemId);
+            if(categories != null)
+            {
+                for(io.github.dsheirer.rrapi.type.TalkgroupCategory c: categories)
+                {
+                    categoryNames.put(c.getTalkgroupCategoryId(), c.getName());
+                }
+            }
+        }
+        catch(io.github.dsheirer.rrapi.RadioReferenceException rre)
+        {
+            throw new Exception(rrError(rre));
+        }
+
+        final List<io.github.dsheirer.rrapi.type.Talkgroup> all = talkgroups != null ? talkgroups : new ArrayList<>();
+        int[] counts = onFxThread(() -> {
+            io.github.dsheirer.alias.AliasList aliasList = mAliasModel.getAliasList(aliasListName);
+            List<Alias> created = new ArrayList<>();
+            int had = 0;
+            for(io.github.dsheirer.rrapi.type.Talkgroup tg: all)
+            {
+                if(!wanted.contains(tg.getTalkgroupId()))
+                {
+                    continue;
+                }
+                if(!aliasList.getAliases(decoder.getIdentifier(tg, system)).isEmpty())
+                {
+                    had++;
+                    continue;
+                }
+                String group = singleGroup != null ? (singleGroup.isEmpty() ? null : singleGroup) :
+                    categoryNames.get(tg.getTalkgroupCategoryId());
+                Alias alias = decoder.createAlias(tg, system, aliasListName, group);
+                if(singleName != null && !singleName.isEmpty())
+                {
+                    alias.setName(singleName);
+                }
+                if(muteEncrypted && io.github.dsheirer.gui.playlist.radioreference.TalkgroupEncryption.lookup(
+                    tg.getEncryptionState()) == io.github.dsheirer.gui.playlist.radioreference.TalkgroupEncryption.FULL)
+                {
+                    alias.addAliasID(new io.github.dsheirer.alias.id.priority.Priority(
+                        io.github.dsheirer.alias.id.priority.Priority.DO_NOT_MONITOR));
+                }
+                created.add(alias);
+            }
+            if(!created.isEmpty())
+            {
+                mAliasModel.addAliases(created);
+            }
+            return new int[]{created.size(), had};
+        });
+        mPlaylistManager.schedulePlaylistSave();
+        return counts[0] + (counts[0] == 1 ? " alias" : " aliases") + " added to " + aliasListName +
+            (counts[1] > 0 ? " (" + counts[1] + " already had one - left alone)" : "") + " (saved)";
     }
 
     /**
