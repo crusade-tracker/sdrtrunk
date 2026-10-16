@@ -494,7 +494,8 @@ public class StatusReporter
             body.put("tuners", tuners);
             body.put("channels", channels());
             body.put("configured", configured);
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies"));   //the scanner shows New / Clone / Delete, Radio Reference
+            body.put("channelOptions", channelOptions());
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections"));   //the scanner shows New / Clone / Delete, Radio Reference
             try
             {
                 body.put("aliasLists", new ArrayList<>(mAliasModel.getListNames()));   //for the channel Edit form
@@ -947,6 +948,23 @@ public class StatusReporter
                     putNbfm(m, nbfm);
                 }
             }
+            //Logging / Recording / Additional Decoders for the channel form
+            List<String> logs = new ArrayList<>(), records = new ArrayList<>(), aux = new ArrayList<>();
+            if(c.getEventLogConfiguration() != null)
+            {
+                c.getEventLogConfiguration().getLoggers().forEach(x -> logs.add(x.name()));
+            }
+            if(c.getRecordConfiguration() != null)
+            {
+                c.getRecordConfiguration().getRecorders().forEach(x -> records.add(x.name()));
+            }
+            if(c.getAuxDecodeConfiguration() != null)
+            {
+                c.getAuxDecodeConfiguration().getAuxDecoders().forEach(x -> aux.add(x.name()));
+            }
+            m.put("logs", logs);
+            m.put("records", records);
+            m.put("aux", aux);
             if(c.getSourceConfiguration() instanceof SourceConfigTuner sct)
             {
                 m.put("freqs", List.of(sct.getFrequency()));
@@ -2667,7 +2685,162 @@ public class StatusReporter
             c.setDecodeConfiguration(nbfm);
         }
 
+        if(change.containsKey("logs") || change.containsKey("records") || change.containsKey("aux"))
+        {
+            io.github.dsheirer.module.decode.DecoderType type = c.getDecodeConfiguration() != null ?
+                c.getDecodeConfiguration().getDecoderType() : null;
+            if(change.containsKey("logs"))
+            {
+                io.github.dsheirer.module.log.config.EventLogConfiguration config = c.getEventLogConfiguration();
+                if(config == null)
+                {
+                    config = new io.github.dsheirer.module.log.config.EventLogConfiguration();
+                }
+                config.clear();
+                for(String name: strList(change.get("logs")))
+                {
+                    io.github.dsheirer.module.log.EventLogType t = io.github.dsheirer.module.log.EventLogType.valueOf(name);
+                    if(!logOptions(type).contains(t))
+                    {
+                        throw new Exception(t.getDisplayString() + " logging isn't offered for this channel's decoder");
+                    }
+                    config.addLogger(t);
+                }
+                c.setEventLogConfiguration(config);
+                done.add("logging");
+            }
+            if(change.containsKey("records"))
+            {
+                io.github.dsheirer.record.config.RecordConfiguration config = c.getRecordConfiguration();
+                if(config == null)
+                {
+                    config = new io.github.dsheirer.record.config.RecordConfiguration();
+                }
+                config.clearRecorders();
+                for(String name: strList(change.get("records")))
+                {
+                    io.github.dsheirer.record.RecorderType t = io.github.dsheirer.record.RecorderType.valueOf(name);
+                    if(!recordOptions(type).contains(t))
+                    {
+                        throw new Exception(t.getDisplayString() + " recording isn't offered for this channel's decoder");
+                    }
+                    config.addRecorder(t);
+                }
+                c.setRecordConfiguration(config);
+                done.add("recording");
+            }
+            if(change.containsKey("aux"))
+            {
+                io.github.dsheirer.module.decode.config.AuxDecodeConfiguration config = c.getAuxDecodeConfiguration();
+                if(config == null)
+                {
+                    config = new io.github.dsheirer.module.decode.config.AuxDecodeConfiguration();
+                }
+                config.clearAuxDecoders();
+                for(String name: strList(change.get("aux")))
+                {
+                    io.github.dsheirer.module.decode.DecoderType t = io.github.dsheirer.module.decode.DecoderType.valueOf(name);
+                    if(!auxOptions(type).contains(t))
+                    {
+                        throw new Exception(t.getDisplayString() + " isn't an additional decoder for this channel's decoder");
+                    }
+                    config.addAuxDecoder(t);
+                }
+                c.setAuxDecodeConfiguration(config);
+                done.add("additional decoders");
+            }
+        }
+
         return done;
+    }
+
+    private static List<String> strList(Object o)
+    {
+        List<String> out = new ArrayList<>();
+        if(o instanceof List<?> list)
+        {
+            for(Object x: list)
+            {
+                out.add(str(x));
+            }
+        }
+        return out;
+    }
+
+    // Logging / Recording / Additional Decoders offered per decoder - the same lists SDR-Trunk's channel editors show
+
+    private static List<io.github.dsheirer.module.log.EventLogType> logOptions(io.github.dsheirer.module.decode.DecoderType type)
+    {
+        if(type == null)
+        {
+            return List.of();
+        }
+        return switch(type)
+        {
+            case P25_PHASE1, DMR, NXDN, MPT1327 -> List.of(io.github.dsheirer.module.log.EventLogType.CALL_EVENT,
+                io.github.dsheirer.module.log.EventLogType.DECODED_MESSAGE, io.github.dsheirer.module.log.EventLogType.TRAFFIC_CALL_EVENT,
+                io.github.dsheirer.module.log.EventLogType.TRAFFIC_DECODED_MESSAGE);
+            case AM, NBFM, LTR, LTR_NET, PASSPORT, P25_PHASE2 -> List.of(io.github.dsheirer.module.log.EventLogType.CALL_EVENT,
+                io.github.dsheirer.module.log.EventLogType.DECODED_MESSAGE);
+            default -> List.of();
+        };
+    }
+
+    private static List<io.github.dsheirer.record.RecorderType> recordOptions(io.github.dsheirer.module.decode.DecoderType type)
+    {
+        if(type == null)
+        {
+            return List.of();
+        }
+        return switch(type)
+        {
+            case P25_PHASE1, P25_PHASE2, DMR, NXDN -> List.of(io.github.dsheirer.record.RecorderType.BASEBAND,
+                io.github.dsheirer.record.RecorderType.DEMODULATED_BIT_STREAM, io.github.dsheirer.record.RecorderType.MBE_CALL_SEQUENCE,
+                io.github.dsheirer.record.RecorderType.TRAFFIC_BASEBAND, io.github.dsheirer.record.RecorderType.TRAFFIC_DEMODULATED_BIT_STREAM,
+                io.github.dsheirer.record.RecorderType.TRAFFIC_MBE_CALL_SEQUENCE);
+            case MPT1327 -> List.of(io.github.dsheirer.record.RecorderType.BASEBAND,
+                io.github.dsheirer.record.RecorderType.DEMODULATED_BIT_STREAM, io.github.dsheirer.record.RecorderType.TRAFFIC_BASEBAND,
+                io.github.dsheirer.record.RecorderType.TRAFFIC_DEMODULATED_BIT_STREAM);
+            case AM, NBFM, LTR, LTR_NET, PASSPORT -> List.of(io.github.dsheirer.record.RecorderType.BASEBAND);
+            default -> List.of();
+        };
+    }
+
+    private static List<io.github.dsheirer.module.decode.DecoderType> auxOptions(io.github.dsheirer.module.decode.DecoderType type)
+    {
+        if(type == null)
+        {
+            return List.of();
+        }
+        return switch(type)
+        {
+            case NBFM -> new ArrayList<>(io.github.dsheirer.module.decode.DecoderType.AUX_DECODERS);
+            case LTR, LTR_NET, PASSPORT -> List.of(io.github.dsheirer.module.decode.DecoderType.FLEETSYNC2,
+                io.github.dsheirer.module.decode.DecoderType.MDC1200);
+            default -> List.of();
+        };
+    }
+
+    /**
+     * Per decoder: the Logging / Recording / Additional Decoders choices with SDR-Trunk's labels (for the scanner's
+     * channel form)
+     */
+    private static Map<String,Object> channelOptions()
+    {
+        Map<String,Object> out = new LinkedHashMap<>();
+        for(io.github.dsheirer.module.decode.DecoderType type: io.github.dsheirer.module.decode.DecoderType.PRIMARY_DECODERS)
+        {
+            Map<String,Object> m = new LinkedHashMap<>();
+            List<List<String>> logs = new ArrayList<>(), records = new ArrayList<>(), aux = new ArrayList<>();
+            logOptions(type).forEach(x -> logs.add(List.of(x.name(), x.getDisplayString())));
+            recordOptions(type).forEach(x -> records.add(List.of(x.name(), x.getDisplayString())));
+            auxOptions(type).forEach(x -> aux.add(List.of(x.name(), x.getDisplayString())));
+            m.put("logs", logs);
+            m.put("records", records);
+            m.put("aux", aux);
+            out.put(type.name(), m);
+        }
+        return out;
     }
 
     /**
