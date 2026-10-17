@@ -497,6 +497,10 @@ public class DecoderFactory
             modules.add(new AMDecoder(configAM));
             modules.add(new AMDecoderState(channel.getName(), configAM));
             List<AbstractAudioFilter> filterList = new ArrayList<>();   // no default filtering for AM
+            if(configAM.getNoiseReduction() != null && configAM.getNoiseReduction() != io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF)
+            {
+                filterList.add(new io.github.dsheirer.audio.NoiseReductionAudioFilter(configAM.getNoiseReduction()));   //Rod build: hiss reduction
+            }
             modules.add(new AudioModule(aliasList, 0, 60000, filterList));
         }
         else

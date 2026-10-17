@@ -166,6 +166,14 @@ public class AMConfigurationEditor extends ChannelConfigurationEditor
             GridPane.setConstraints(getTalkgroupField(), 5, row);
             gridPane.getChildren().add(getTalkgroupField());
 
+            //Rod build: hiss reduction
+            Label noiseLabel = new Label("Noise Reduction");
+            GridPane.setHalignment(noiseLabel, HPos.RIGHT);
+            GridPane.setConstraints(noiseLabel, 0, ++row);
+            gridPane.getChildren().add(noiseLabel);
+            GridPane.setConstraints(getNoiseReductionCombo(), 1, row);
+            gridPane.getChildren().add(getNoiseReductionCombo());
+
             mDecoderPane.setContent(gridPane);
 
             //Special handling - the pill button doesn't like to set a selected state if the pane is not expanded,
@@ -329,6 +337,22 @@ public class AMConfigurationEditor extends ChannelConfigurationEditor
         return mTalkgroupField;
     }
 
+    private javafx.scene.control.ComboBox<io.github.dsheirer.audio.NoiseReductionAudioFilter.Level> mNoiseReductionCombo;
+
+    private javafx.scene.control.ComboBox<io.github.dsheirer.audio.NoiseReductionAudioFilter.Level> getNoiseReductionCombo()
+    {
+        if(mNoiseReductionCombo == null)
+        {
+            mNoiseReductionCombo = new javafx.scene.control.ComboBox<>();
+            mNoiseReductionCombo.getItems().addAll(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.values());
+            mNoiseReductionCombo.setValue(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF);
+            mNoiseReductionCombo.setTooltip(new Tooltip("Turns down steady background hiss. Higher removes more but can " +
+                "make voices sound watery - Low is safe on any channel."));
+            mNoiseReductionCombo.valueProperty().addListener((obs, ov, nv) -> modifiedProperty().set(true));
+        }
+        return mNoiseReductionCombo;
+    }
+
     private TextField getSquelchThresholdField()
     {
         if(mSquelchThresholdField == null)
@@ -421,6 +445,7 @@ public class AMConfigurationEditor extends ChannelConfigurationEditor
             mSquelchTextFormatter.setValue(decodeConfigAM.getSquelchThreshold());
             getSquelchAutoTrackSwitch().setDisable(false);
             getSquelchAutoTrackSwitch().setSelected(decodeConfigAM.isSquelchAutoTrack());
+            getNoiseReductionCombo().setValue(decodeConfigAM.getNoiseReduction());
 
         }
         else
@@ -437,6 +462,7 @@ public class AMConfigurationEditor extends ChannelConfigurationEditor
             getSquelchThresholdField().setDisable(true);
             getSquelchAutoTrackSwitch().setDisable(true);
             getSquelchAutoTrackSwitch().setSelected(false);
+            getNoiseReductionCombo().setValue(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.OFF);
         }
     }
 
@@ -473,6 +499,7 @@ public class AMConfigurationEditor extends ChannelConfigurationEditor
         config.setTalkgroup(talkgroup);
         config.setSquelchThreshold(mSquelchTextFormatter.getValue());
         config.setSquelchAutoTrack(getSquelchAutoTrackSwitch().isSelected());
+        config.setNoiseReduction(getNoiseReductionCombo().getValue());
         getItem().setDecodeConfiguration(config);
     }
 

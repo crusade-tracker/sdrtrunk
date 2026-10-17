@@ -520,7 +520,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction"));
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings"));
             try
             {
                 body.put("streams", streamsReport());   //Streaming tab: configurations, status, fields (no passwords / keys)
@@ -677,6 +677,17 @@ public class StatusReporter
                 if(tuner.getChannelSourceManager() != null)
                 {
                     m.put("channels", tuner.getChannelSourceManager().getTunerChannelCount());
+                }
+                if(tc instanceof io.github.dsheirer.source.tuner.sdrplay.RspTunerController<?> rsp)
+                {
+                    try
+                    {
+                        m.put("rsp", rspReport(rsp, dt.getTunerConfiguration()));   //the RSP editor's settings
+                    }
+                    catch(Exception rspEx)
+                    {
+                        //not readable right now - next report
+                    }
                 }
             }
 
@@ -1439,6 +1450,15 @@ public class StatusReporter
                 mTunerManager.saveConfigurations();
                 return dt.getId() + " Min/Max " + mhz(beforeMin) + "-" + mhz(beforeMax) + " -> " + mhz(min) + "-" + mhz(max) +
                     " MHz (saved)" + (dt.hasTuner() ? "" : "; the tuner isn't running, so it applies when it starts");
+            }
+            case "tuner_rsp":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                if(!dt.hasTuner() || !(dt.getTuner().getTunerController() instanceof io.github.dsheirer.source.tuner.sdrplay.RspTunerController<?> rsp))
+                {
+                    throw new Exception(dt.getId() + " isn't a running SDRplay RSP");
+                }
+                return dt.getId() + ": " + rspApply(rsp, dt.getTunerConfiguration(), parseValue(value));
             }
             case "tuner_autoppm":
             {
@@ -2370,6 +2390,173 @@ public class StatusReporter
         return alias.getAliasListName() + "\u0001" + alias.getName() + "\u0001" + String.join(",", ids);
     }
 
+    // ---------------------------------------------------------------- SDRplay RSP settings (admin Tuners page)
+    // The same settings as SDR-Trunk's RSP tuner editor. Models differ (RSP1A / RSPdx / RSP2 / RSPduo ...), so the
+    // optional ones are found by name on the model's control and configuration - a model without one just doesn't
+    // offer it, as its editor doesn't.
+
+    private static java.lang.reflect.Method findMethod(Object o, String name, int params)
+    {
+        if(o == null)
+        {
+            return null;
+        }
+        for(java.lang.reflect.Method method: o.getClass().getMethods())
+        {
+            if(method.getName().equals(name) && method.getParameterCount() == params)
+            {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    private static Object callGet(Object o, String... names)
+    {
+        for(String name: names)
+        {
+            java.lang.reflect.Method method = findMethod(o, name, 0);
+            if(method != null)
+            {
+                try
+                {
+                    return method.invoke(o);
+                }
+                catch(Exception e)
+                {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private Map<String,Object> rspReport(io.github.dsheirer.source.tuner.sdrplay.RspTunerController<?> rsp,
+                                         TunerConfiguration config) throws Exception
+    {
+        Map<String,Object> r = new LinkedHashMap<>();
+        io.github.dsheirer.source.tuner.sdrplay.IControlRsp control = rsp.getControlRsp();
+        r.put("lnaMax", control.getMaximumLNASetting());
+        r.put("lna", control.getLNA());                        //LNA state: 0 = most gain
+        r.put("gr", control.getBasebandGainReduction());       //IF gain reduction 20-59 dB: lower = more gain
+        r.put("agc", control.getAgcMode() == io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.ENABLE);
+        try
+        {
+            r.put("gain", Math.round(control.getCurrentGain()));
+        }
+        catch(Exception e)
+        {
+            //not available
+        }
+        //optional per model - read from the saved configuration (what the editor shows)
+        for(String[] f: new String[][]{{"rfNotch", "isRfNotch"}, {"dabNotch", "isRfDabNotch"}, {"biasT", "isBiasT"}})
+        {
+            Object v = callGet(config, f[1]);
+            if(v instanceof Boolean b)
+            {
+                r.put(f[0], b);
+            }
+        }
+        Object antenna = callGet(config, "getAntenna", "getAntennaSelection");
+        if(antenna instanceof Enum<?> e)
+        {
+            List<List<String>> options = new ArrayList<>();
+            for(Object o: e.getDeclaringClass().getEnumConstants())
+            {
+                options.add(List.of(((Enum<?>)o).name(), o.toString()));
+            }
+            r.put("antenna", e.name());
+            r.put("antennas", options);
+        }
+        r.put("model", config != null ? config.getClass().getSimpleName().replace("TunerConfiguration", "") : null);
+        return r;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private String rspApply(io.github.dsheirer.source.tuner.sdrplay.RspTunerController<?> rsp, TunerConfiguration config,
+                            Map<String,Object> v) throws Exception
+    {
+        io.github.dsheirer.source.tuner.sdrplay.IControlRsp control = rsp.getControlRsp();
+        List<String> done = new ArrayList<>();
+        if(v.containsKey("lna") || v.containsKey("gr"))
+        {
+            int lna = v.containsKey("lna") ? Integer.parseInt(str(v.get("lna"))) : control.getLNA();
+            int gr = v.containsKey("gr") ? Integer.parseInt(str(v.get("gr"))) : control.getBasebandGainReduction();
+            if(lna < 0 || lna > control.getMaximumLNASetting())
+            {
+                throw new Exception("LNA must be 0 to " + control.getMaximumLNASetting() + " here");
+            }
+            if(gr < 20 || gr > 59)
+            {
+                throw new Exception("IF gain reduction must be 20 to 59 dB");
+            }
+            control.setGain(lna, gr);
+            invoke(config, "setLNA", lna);
+            invoke(config, "setBasebandGainReduction", gr);
+            done.add("LNA " + lna + ", IF gain reduction " + gr + " dB");
+        }
+        if(v.get("agc") instanceof Boolean on)
+        {
+            io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode mode = on ?
+                io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.ENABLE :
+                io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.DISABLE;
+            control.setAgcMode(mode);
+            invoke(config, "setAgcMode", mode);
+            done.add("IF AGC " + (on ? "automatic" : "manual"));
+        }
+        for(String[] f: new String[][]{{"rfNotch", "setRfNotch", "FM band filter"}, {"dabNotch", "setRfDabNotch", "DAB band filter"},
+                {"biasT", "setBiasT", "Bias-T"}})
+        {
+            if(v.get(f[0]) instanceof Boolean on)
+            {
+                if(findMethod(control, f[1], 1) == null || findMethod(config, f[1], 1) == null)
+                {
+                    throw new Exception("this RSP model has no " + f[2]);
+                }
+                invoke(control, f[1], on);
+                invoke(config, f[1], on);
+                done.add(f[2] + " " + (on ? "on" : "off"));
+            }
+        }
+        if(v.get("antenna") != null)
+        {
+            Object current = callGet(config, "getAntenna", "getAntennaSelection");
+            if(!(current instanceof Enum<?> e))
+            {
+                throw new Exception("this RSP model has one antenna input");
+            }
+            Enum chosen = Enum.valueOf((Class)e.getDeclaringClass(), str(v.get("antenna")));
+            String setter = findMethod(config, "setAntenna", 1) != null ? "setAntenna" : "setAntennaSelection";
+            invoke(control, setter, chosen);
+            invoke(config, setter, chosen);
+            done.add("antenna " + chosen);
+        }
+        if(done.isEmpty())
+        {
+            throw new Exception("nothing to change");
+        }
+        mTunerManager.saveConfigurations();
+        return String.join(", ", done) + " (saved)";
+    }
+
+    private static void invoke(Object o, String name, Object arg) throws Exception
+    {
+        java.lang.reflect.Method method = findMethod(o, name, 1);
+        if(method == null)
+        {
+            throw new Exception("not available on this model (" + name + ")");
+        }
+        try
+        {
+            method.invoke(o, arg);
+        }
+        catch(java.lang.reflect.InvocationTargetException ite)
+        {
+            Throwable t = ite.getCause();
+            throw new Exception(t != null && t.getMessage() != null ? t.getMessage() : String.valueOf(t));
+        }
+    }
+
     // ---------------------------------------------------------------- alias lists and streaming (admin page)
 
     /**
@@ -3076,8 +3263,29 @@ public class StatusReporter
             return c.getName() + ": nothing to change";
         }
         mPlaylistManager.schedulePlaylistSave();
-        return c.getName() + ": changed " + String.join(", ", done) + " (saved)" +
-            (c.isProcessing() ? " - restart the channel to use the new settings" : "");
+
+        //Noise squelch thresholds take effect right away on a running channel, as SDR-Trunk's squelch view does them
+        boolean squelchOnly = done.stream().allMatch(d -> d.startsWith("noise squelch") || d.startsWith("squelch hysteresis"));
+        boolean live = false;
+        if(c.isProcessing() && c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.nbfm.DecodeConfigNBFM nbfm &&
+            (change.containsKey("noiseOpen") || change.containsKey("noiseClose") || change.containsKey("hystOpen") || change.containsKey("hystClose")))
+        {
+            ProcessingChain chain = mChannelProcessingManager.getProcessingChain(c);
+            if(chain != null)
+            {
+                for(io.github.dsheirer.module.Module module: chain.getModules())
+                {
+                    if(module instanceof io.github.dsheirer.dsp.squelch.INoiseSquelchController sq)
+                    {
+                        sq.setNoiseThreshold(nbfm.getSquelchNoiseOpenThreshold(), nbfm.getSquelchNoiseCloseThreshold());
+                        sq.setHysteresisThreshold(nbfm.getSquelchHysteresisOpenThreshold(), nbfm.getSquelchHysteresisCloseThreshold());
+                        live = true;
+                    }
+                }
+            }
+        }
+        return c.getName() + ": changed " + String.join(", ", done) + " (saved)" + (live ? " - squelch applied now" : "") +
+            (c.isProcessing() && !(squelchOnly && live) ? " - restart the channel to use the new settings" : "");
     }
 
     /**
@@ -3276,6 +3484,7 @@ public class StatusReporter
         }
 
         if(change.containsKey("bandwidth") || change.containsKey("deemphasis") || change.containsKey("noiseReduction") || change.containsKey("audioFilter") ||
+            change.containsKey("noiseOpen") || change.containsKey("noiseClose") || change.containsKey("hystOpen") || change.containsKey("hystClose") ||
             change.containsKey("alc") || change.containsKey("talkgroup") || change.containsKey("squelchType") ||
             change.containsKey("squelchCode") || change.containsKey("amSquelch") || change.containsKey("amAutoTrack"))
         {
@@ -3534,6 +3743,15 @@ public class StatusReporter
             am.setSquelchAutoTrack(Boolean.TRUE.equals(change.get("amAutoTrack")));
             done.add("squelch auto-track");
         }
+        if(change.containsKey("noiseReduction"))
+        {
+            am.setNoiseReduction(io.github.dsheirer.audio.NoiseReductionAudioFilter.Level.fromName(str(change.get("noiseReduction"))));
+            done.add("noise reduction " + am.getNoiseReduction());
+        }
+        if(change.containsKey("noiseOpen") || change.containsKey("noiseClose") || change.containsKey("hystOpen") || change.containsKey("hystClose"))
+        {
+            throw new Exception("noise squelch thresholds are an NBFM setting - AM uses its squelch threshold");
+        }
     }
 
     private static List<List<Object>> rows(Object o)
@@ -3711,6 +3929,7 @@ public class StatusReporter
             m.put("talkgroup", am.getTalkgroup());
             m.put("amSquelch", am.getSquelchThreshold());
             m.put("amAutoTrack", am.isSquelchAutoTrack());
+            m.put("noiseReduction", am.getNoiseReduction() != null ? am.getNoiseReduction().name() : "OFF");
         }
         else if(dc instanceof io.github.dsheirer.module.decode.dmr.DecodeConfigDMR dmr)
         {
@@ -3776,6 +3995,10 @@ public class StatusReporter
         m.put("bandwidth", nbfm.getBandwidth() != null ? String.valueOf(nbfm.getBandwidth().getValue() / 1000.0) : null);
         m.put("deemphasis", nbfm.getDeemphasis() == io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 ? "300" : "none");
         m.put("noiseReduction", nbfm.getNoiseReduction() != null ? nbfm.getNoiseReduction().name() : "OFF");
+        m.put("noiseOpen", Math.round(nbfm.getSquelchNoiseOpenThreshold() * 100) / 100.0);
+        m.put("noiseClose", Math.round(nbfm.getSquelchNoiseCloseThreshold() * 100) / 100.0);
+        m.put("hystOpen", nbfm.getSquelchHysteresisOpenThreshold());
+        m.put("hystClose", nbfm.getSquelchHysteresisCloseThreshold());
         m.put("audioFilter", nbfm.isAudioFilter());
         m.put("alc", nbfm.isAudioALC());
         m.put("talkgroup", nbfm.getTalkgroup());
@@ -3825,6 +4048,36 @@ public class StatusReporter
             nbfm.setDeemphasis("300".equals(str(change.get("deemphasis"))) ?
                 io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NBFM_300 : io.github.dsheirer.module.decode.nbfm.DeemphasisMode.NONE);
             done.add("de-emphasis");
+        }
+        if(change.containsKey("noiseOpen") || change.containsKey("noiseClose"))
+        {
+            float open = change.containsKey("noiseOpen") ? Float.parseFloat(str(change.get("noiseOpen"))) : nbfm.getSquelchNoiseOpenThreshold();
+            float close = change.containsKey("noiseClose") ? Float.parseFloat(str(change.get("noiseClose"))) : nbfm.getSquelchNoiseCloseThreshold();
+            float min = io.github.dsheirer.dsp.squelch.NoiseSquelch.MINIMUM_NOISE_THRESHOLD, max = io.github.dsheirer.dsp.squelch.NoiseSquelch.MAXIMUM_NOISE_THRESHOLD;
+            if(open < min - 1e-6 || open > max + 1e-6 || close < min - 1e-6 || close > max + 1e-6)
+            {
+                throw new Exception("noise squelch Open and Close must be " + min + " to " + max);
+            }
+            if(open > close + 1e-6)
+            {
+                throw new Exception("noise squelch Open must be at or below Close");
+            }
+            nbfm.setSquelchNoiseOpenThreshold(open);
+            nbfm.setSquelchNoiseCloseThreshold(close);
+            done.add("noise squelch " + open + " / " + close);
+        }
+        if(change.containsKey("hystOpen") || change.containsKey("hystClose"))
+        {
+            int open = change.containsKey("hystOpen") ? Integer.parseInt(str(change.get("hystOpen"))) : nbfm.getSquelchHysteresisOpenThreshold();
+            int close = change.containsKey("hystClose") ? Integer.parseInt(str(change.get("hystClose"))) : nbfm.getSquelchHysteresisCloseThreshold();
+            int min = io.github.dsheirer.dsp.squelch.NoiseSquelch.MINIMUM_HYSTERESIS_THRESHOLD, max = io.github.dsheirer.dsp.squelch.NoiseSquelch.MAXIMUM_HYSTERESIS_THRESHOLD;
+            if(open < min || open > max || close < min || close > max)
+            {
+                throw new Exception("squelch hysteresis Open and Close must be " + min + " to " + max);
+            }
+            nbfm.setSquelchHysteresisOpenThreshold(open);
+            nbfm.setSquelchHysteresisCloseThreshold(close);
+            done.add("squelch hysteresis " + open + " / " + close);
         }
         if(change.containsKey("noiseReduction"))
         {
