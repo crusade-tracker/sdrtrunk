@@ -41,6 +41,8 @@ public class P25P1AudioModule extends ImbeAudioModule
     private SquelchStateListener mSquelchStateListener = new SquelchStateListener();
     private NonClippingGain mGain = new NonClippingGain(5.0f, 0.95f);
     private List<LDUMessage> mCachedLDUMessages = new ArrayList<>();
+    private final io.github.dsheirer.module.decode.p25.audio.quality.ImbeVoiceQuality mVoiceQuality =
+        new io.github.dsheirer.module.decode.p25.audio.quality.ImbeVoiceQuality();
 
     public P25P1AudioModule(UserPreferences userPreferences, AliasList aliasList)
     {
@@ -137,9 +139,15 @@ public class P25P1AudioModule extends ImbeAudioModule
         {
             for(byte[] frame : ldu.getIMBEFrames())
             {
+                boolean bad = mVoiceQuality.isBad(frame);   //Rod build: measurement only, on a copy of the bits
                 float[] audio = getAudioCodec().getAudio(frame);
                 audio = mGain.apply(audio);
                 addAudio(audio);
+                io.github.dsheirer.audio.AudioSegment segment = getAudioSegment();
+                if(segment != null)
+                {
+                    segment.addVoiceFrameQuality(bad, mVoiceQuality.getLastErrors());
+                }
             }
         }
         else
@@ -161,6 +169,7 @@ public class P25P1AudioModule extends ImbeAudioModule
             if(event.getSquelchState() == SquelchState.SQUELCH)
             {
                 closeAudioSegment();
+                mVoiceQuality.reset();
                 mEncryptedCallStateEstablished = false;
                 mEncryptedCall = false;
                 mCachedLDUMessages.clear();

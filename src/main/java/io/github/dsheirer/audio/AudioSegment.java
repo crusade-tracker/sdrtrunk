@@ -116,6 +116,39 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
         return mTimeslot;
     }
 
+    //Rod build: voice frame quality (P25 Phase 1) - frames, frames the codec had to repeat or mute, bit errors
+    private int mVoiceFrames;
+    private int mBadVoiceFrames;
+    private long mVoiceBitErrors;
+
+    /**
+     * Rod build: counts one voice frame for this call's quality figure
+     */
+    public void addVoiceFrameQuality(boolean bad, int bitErrors)
+    {
+        mVoiceFrames++;
+        if(bad)
+        {
+            mBadVoiceFrames++;
+        }
+        mVoiceBitErrors += bitErrors;
+    }
+
+    public int getVoiceFrames()
+    {
+        return mVoiceFrames;
+    }
+
+    public int getBadVoiceFrames()
+    {
+        return mBadVoiceFrames;
+    }
+
+    public long getVoiceBitErrors()
+    {
+        return mVoiceBitErrors;
+    }
+
     /**
      * Creation timestamp for this audio segment
      * @return long milliseconds since epoch

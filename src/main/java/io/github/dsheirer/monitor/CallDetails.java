@@ -301,6 +301,16 @@ public class CallDetails
                 d.put("network", network);
             }
 
+            //Voice quality (P25 Phase 1): frames, frames the codec had to repeat or mute, bit errors found
+            if(segment.getVoiceFrames() > 0)
+            {
+                Map<String,Object> voice = new LinkedHashMap<>();
+                voice.put("frames", segment.getVoiceFrames());
+                voice.put("bad", segment.getBadVoiceFrames());
+                voice.put("bits", segment.getVoiceBitErrors());
+                d.put("voice", voice);
+            }
+
             return MAPPER.writeValueAsString(d);
         }
         catch(Exception e)
