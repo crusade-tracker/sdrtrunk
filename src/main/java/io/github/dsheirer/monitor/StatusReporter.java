@@ -106,6 +106,8 @@ public class StatusReporter
     private final ChannelProcessingManager mChannelProcessingManager;
     private final BroadcastModel mBroadcastModel;
     private final AliasModel mAliasModel;
+    //Goes up whenever an alias or alias list changes, so the scanner page re-reads aliases changed in SDR-Trunk itself
+    private final java.util.concurrent.atomic.AtomicLong mAliasVersion = new java.util.concurrent.atomic.AtomicLong(1);
     private final ChannelModel mChannelModel;
     private final PlaylistManager mPlaylistManager;
     private final ConcurrentLinkedQueue<Map<String,Object>> mResults = new ConcurrentLinkedQueue<>();
@@ -167,6 +169,8 @@ public class StatusReporter
 
     public void start()
     {
+        mAliasModel.aliasList().addListener((javafx.collections.ListChangeListener<io.github.dsheirer.alias.Alias>)c -> mAliasVersion.incrementAndGet());
+        mAliasModel.aliasListNames().addListener((javafx.collections.ListChangeListener<String>)c -> mAliasVersion.incrementAndGet());
         mChannelProcessingManager.addDecodeEventListener(this::receiveDecodeEvent);
         mChannelProcessingManager.addChannelEventListener(this::receiveChannelEvent);
 
@@ -520,7 +524,8 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings"));
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version"));
+            body.put("aliasVersion", mAliasVersion.get());
             try
             {
                 body.put("streams", streamsReport());   //Streaming tab: configurations, status, fields (no passwords / keys)
