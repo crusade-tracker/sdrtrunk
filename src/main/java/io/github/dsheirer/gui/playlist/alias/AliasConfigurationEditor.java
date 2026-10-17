@@ -463,6 +463,11 @@ public class AliasConfigurationEditor extends SplitPane implements IAliasListRef
             streamColumn.setCellValueFactory(new PropertyValueFactory<>("streamable"));
             streamColumn.setCellFactory(new IconCell(FontAwesome.VOLUME_UP, Color.DARKBLUE));
 
+            //Rod build: Skip Decode (P25 trunking doesn't follow calls to this alias) - shown like Record and Stream
+            TableColumn<Alias, Boolean> skipDecodeColumn = new TableColumn("Skip Decode");
+            skipDecodeColumn.setCellValueFactory(new PropertyValueFactory<>("skipDecode"));
+            skipDecodeColumn.setCellFactory(new IconCell(FontAwesome.BAN, Color.RED));
+
             TableColumn<Alias, Integer> idsColumn = new TableColumn("IDs");
             idsColumn.setCellValueFactory(new IdentifierCountCell());
 
@@ -498,7 +503,7 @@ public class AliasConfigurationEditor extends SplitPane implements IAliasListRef
 
 
             mAliasTableView.getColumns().addAll(nameColumn, groupColumn, colorColumn, iconColumn, priorityColumn,
-                    recordColumn, streamColumn, idsColumn, errorsColumn);
+                    recordColumn, streamColumn, skipDecodeColumn, idsColumn, errorsColumn);
 
             mAliasTableView.setPlaceholder(getPlaceholderLabel());
             mAliasTableView.setItems(getAliasSortedList());

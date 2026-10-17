@@ -238,7 +238,7 @@ public class RspDxTunerEditor extends RspTunerEditor<RspDxTunerConfiguration>
             getConfiguration().setSampleRate((RspSampleRate)getSampleRateCombo().getSelectedItem());
             getConfiguration().setBiasT(getBiasTCheckBox().isSelected());
             getConfiguration().setHdrMode(getHdrModeCheckBox().isSelected());
-            getConfiguration().setRfDabNotch(getRfNotchCheckBox().isSelected());
+            getConfiguration().setRfDabNotch(getRfDabNotchCheckBox().isSelected());
             getConfiguration().setRfNotch(getRfNotchCheckBox().isSelected());
             getConfiguration().setAntenna((RspDxAntenna) getAntennaCombo().getSelectedItem());
             getConfiguration().setLNA(getLNASlider().getLNA());
