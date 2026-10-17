@@ -64,6 +64,8 @@ public class AliasBulkEditor extends Editor<List<Alias>>
     private Button mApplyMonitorButton;
     private ToggleSwitch mRecordToggleSwitch;
     private Button mApplyRecordButton;
+    private ToggleSwitch mSkipDecodeToggleSwitch;
+    private Button mApplySkipDecodeButton;
 
     private BooleanProperty mChangeInProgressProperty;
     private ReadOnlyBooleanProperty mChangeInProgressROProperty;
@@ -153,6 +155,18 @@ public class AliasBulkEditor extends Editor<List<Alias>>
 
         GridPane.setConstraints(getApplyRecordButton(), 4, row);
         gridPane.getChildren().add(getApplyRecordButton());
+
+        //Rod build: Skip Decode for all selected aliases
+        Label skipDecodeLabel = new Label("Skip Decode");
+        GridPane.setHalignment(skipDecodeLabel, HPos.RIGHT);
+        GridPane.setConstraints(skipDecodeLabel, 0, ++row);
+        gridPane.getChildren().add(skipDecodeLabel);
+
+        GridPane.setConstraints(getSkipDecodeToggleSwitch(), 1, row);
+        gridPane.getChildren().add(getSkipDecodeToggleSwitch());
+
+        GridPane.setConstraints(getApplySkipDecodeButton(), 4, row);
+        gridPane.getChildren().add(getApplySkipDecodeButton());
 
         getChildren().add(gridPane);
     }
@@ -426,6 +440,38 @@ public class AliasBulkEditor extends Editor<List<Alias>>
         }
 
         return mApplyRecordButton;
+    }
+
+    private ToggleSwitch getSkipDecodeToggleSwitch()
+    {
+        if(mSkipDecodeToggleSwitch == null)
+        {
+            mSkipDecodeToggleSwitch = new ToggleSwitch();
+            mSkipDecodeToggleSwitch.setSelected(false);
+            mSkipDecodeToggleSwitch.selectedProperty()
+                    .addListener((observable, oldValue, newValue) -> modifiedProperty().set(true));
+        }
+
+        return mSkipDecodeToggleSwitch;
+    }
+
+    private Button getApplySkipDecodeButton()
+    {
+        if(mApplySkipDecodeButton == null)
+        {
+            mApplySkipDecodeButton = new Button("Apply");
+            mApplySkipDecodeButton.setOnAction(event -> {
+                startChange();
+                boolean skip = getSkipDecodeToggleSwitch().isSelected();
+                for(Alias alias : getItem())
+                {
+                    alias.setSkipDecode(skip);
+                }
+                endChange();
+            });
+        }
+
+        return mApplySkipDecodeButton;
     }
 
     /**

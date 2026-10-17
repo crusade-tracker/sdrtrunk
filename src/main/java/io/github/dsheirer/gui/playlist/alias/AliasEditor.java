@@ -39,6 +39,7 @@ public class AliasEditor extends TabPane
     private Tab mAliasConfigurationTab;
     private Tab mAliasIdentifierTab;
     private Tab mAliasRecordingTab;
+    private Tab mAliasSkipDecodeTab;
 
     /**
      * Constructs an instance
@@ -54,7 +55,8 @@ public class AliasEditor extends TabPane
         setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         Tab viewByTab = new Tab("View By:");
         viewByTab.setDisable(true);
-        getTabs().addAll(viewByTab, getAliasConfigurationTab(), getAliasIdentifierTab(), getAliasRecordingTab());
+        getTabs().addAll(viewByTab, getAliasConfigurationTab(), getAliasIdentifierTab(), getAliasRecordingTab(),
+            getAliasSkipDecodeTab());
     }
 
     /**
@@ -139,5 +141,19 @@ public class AliasEditor extends TabPane
         }
 
         return mAliasRecordingTab;
+    }
+
+    /**
+     * Rod build: View By Skip Decode tab
+     */
+    private Tab getAliasSkipDecodeTab()
+    {
+        if(mAliasSkipDecodeTab == null)
+        {
+            mAliasSkipDecodeTab = new Tab("Skip Decode");
+            mAliasSkipDecodeTab.setContent(new AliasViewBySkipDecodeEditor(mPlaylistManager));
+        }
+
+        return mAliasSkipDecodeTab;
     }
 }
