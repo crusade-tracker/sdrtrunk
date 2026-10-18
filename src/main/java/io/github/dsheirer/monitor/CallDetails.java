@@ -324,7 +324,7 @@ public class CallDetails
                 {
                     end.put("gapMs", segment.getEndGapMs());
                 }
-                d.put("end", end);
+                d.put("ended", end);   //not "end" - that key is the call's end time
             }
 
             return MAPPER.writeValueAsString(d);
