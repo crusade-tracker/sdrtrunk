@@ -52,10 +52,10 @@ public class StateMonitoringSquelchController implements IStateMachineListener, 
     public void setSquelchLock(boolean locked)
     {
         mSquelchLocked = locked;
-        setSquelchState(mSquelchLocked ? SquelchState.UNSQUELCH : SquelchState.SQUELCH);
+        setSquelchState(mSquelchLocked ? SquelchState.UNSQUELCH : SquelchState.SQUELCH, null);
     }
 
-    private void setSquelchState(SquelchState squelchState)
+    private void setSquelchState(SquelchState squelchState, State cause)
     {
         if(mSquelchState != squelchState)
         {
@@ -63,7 +63,7 @@ public class StateMonitoringSquelchController implements IStateMachineListener, 
 
             if(mSquelchStateListener != null)
             {
-                mSquelchStateListener.receive(new SquelchStateEvent(squelchState, mTimeslot));
+                mSquelchStateListener.receive(new SquelchStateEvent(squelchState, mTimeslot, cause));
             }
         }
     }
@@ -75,11 +75,11 @@ public class StateMonitoringSquelchController implements IStateMachineListener, 
         {
             if(state == State.CALL)
             {
-                setSquelchState(SquelchState.UNSQUELCH);
+                setSquelchState(SquelchState.UNSQUELCH, state);
             }
             else
             {
-                setSquelchState(SquelchState.SQUELCH);
+                setSquelchState(SquelchState.SQUELCH, state);
             }
         }
     }

@@ -43,6 +43,9 @@ public class P25P1AudioModule extends ImbeAudioModule
     private List<LDUMessage> mCachedLDUMessages = new ArrayList<>();
     private final io.github.dsheirer.module.decode.p25.audio.quality.ImbeVoiceQuality mVoiceQuality =
         new io.github.dsheirer.module.decode.p25.audio.quality.ImbeVoiceQuality();
+    //Rod build: for the call's "ended by" details - last message type seen and time of the last voice frame
+    private String mLastMessageType;
+    private long mLastVoiceFrameTime;
 
     public P25P1AudioModule(UserPreferences userPreferences, AliasList aliasList)
     {
@@ -81,6 +84,11 @@ public class P25P1AudioModule extends ImbeAudioModule
      */
     public void receive(IMessage message)
     {
+        if(message instanceof io.github.dsheirer.module.decode.p25.phase1.message.P25P1Message p1 && p1.getDUID() != null)
+        {
+            mLastMessageType = p1.getDUID().getLabel().trim();
+        }
+
         if(hasAudioCodec())
         {
             if(mEncryptedCallStateEstablished)
@@ -135,6 +143,7 @@ public class P25P1AudioModule extends ImbeAudioModule
      */
     private void processAudio(LDUMessage ldu)
     {
+        mLastVoiceFrameTime = System.currentTimeMillis();
         if(!mEncryptedCall)
         {
             for(byte[] frame : ldu.getIMBEFrames())
@@ -168,6 +177,14 @@ public class P25P1AudioModule extends ImbeAudioModule
         {
             if(event.getSquelchState() == SquelchState.SQUELCH)
             {
+                io.github.dsheirer.audio.AudioSegment segment = getCurrentAudioSegment();
+                if(segment != null)
+                {
+                    segment.setCallEnd(event.getChannelState() != null ? event.getChannelState().name() : null,
+                        mLastMessageType, mLastVoiceFrameTime > 0 ? System.currentTimeMillis() - mLastVoiceFrameTime : -1);
+                }
+                mLastMessageType = null;
+                mLastVoiceFrameTime = 0;
                 closeAudioSegment();
                 mVoiceQuality.reset();
                 mEncryptedCallStateEstablished = false;

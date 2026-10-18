@@ -311,6 +311,22 @@ public class CallDetails
                 d.put("voice", voice);
             }
 
+            //Why the call ended (P25 Phase 1): channel state it changed to, last message received, ms since last voice frame
+            if(segment.getEndState() != null)
+            {
+                Map<String,Object> end = new LinkedHashMap<>();
+                end.put("state", segment.getEndState());
+                if(segment.getEndLastMessage() != null)
+                {
+                    end.put("last", segment.getEndLastMessage());
+                }
+                if(segment.getEndGapMs() >= 0)
+                {
+                    end.put("gapMs", segment.getEndGapMs());
+                }
+                d.put("end", end);
+            }
+
             return MAPPER.writeValueAsString(d);
         }
         catch(Exception e)

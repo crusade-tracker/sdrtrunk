@@ -149,6 +149,33 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
         return mVoiceBitErrors;
     }
 
+    //Rod build: why the call ended - channel state it changed to, last message received, ms since last voice frame
+    private volatile String mEndState;
+    private volatile String mEndLastMessage;
+    private volatile long mEndGapMs = -1;
+
+    public void setCallEnd(String state, String lastMessage, long gapMs)
+    {
+        mEndState = state;
+        mEndLastMessage = lastMessage;
+        mEndGapMs = gapMs;
+    }
+
+    public String getEndState()
+    {
+        return mEndState;
+    }
+
+    public String getEndLastMessage()
+    {
+        return mEndLastMessage;
+    }
+
+    public long getEndGapMs()
+    {
+        return mEndGapMs;
+    }
+
     /**
      * Creation timestamp for this audio segment
      * @return long milliseconds since epoch

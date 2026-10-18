@@ -29,11 +29,29 @@ public class SquelchStateEvent
 {
     private SquelchState mSquelchState;
     private int mTimeslot;
+    private io.github.dsheirer.channel.state.State mChannelState;   //Rod build: channel state that caused it (may be null)
 
     public SquelchStateEvent(SquelchState squelchState, int timeslot)
     {
         mSquelchState = squelchState;
         mTimeslot = timeslot;
+    }
+
+    /**
+     * Rod build: squelch event that also carries the channel state change that caused it
+     */
+    public SquelchStateEvent(SquelchState squelchState, int timeslot, io.github.dsheirer.channel.state.State channelState)
+    {
+        this(squelchState, timeslot);
+        mChannelState = channelState;
+    }
+
+    /**
+     * Rod build: channel state that caused this squelch change (ACTIVE, FADE, TEARDOWN ...), or null if not known
+     */
+    public io.github.dsheirer.channel.state.State getChannelState()
+    {
+        return mChannelState;
     }
 
     public SquelchState getSquelchState()

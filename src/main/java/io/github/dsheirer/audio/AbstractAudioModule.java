@@ -79,6 +79,17 @@ public abstract class AbstractAudioModule extends Module implements IAudioSegmen
     }
 
     /**
+     * Rod build: the current audio segment, without creating one (null when there is none)
+     */
+    protected AudioSegment getCurrentAudioSegment()
+    {
+        synchronized(this)
+        {
+            return mAudioSegment;
+        }
+    }
+
+    /**
      * Closes the current audio segment
      */
     protected void closeAudioSegment()
