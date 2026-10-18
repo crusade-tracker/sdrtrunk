@@ -480,7 +480,9 @@ public class DecoderFactory
             filterList.add(new AudioGainFilter(1, 10, 0.90f));
         }
 
-        modules.add(new AudioModule(aliasList, 0, 60000, filterList));
+        AudioModule audioModule = new AudioModule(aliasList, 0, 60000, filterList);
+        audioModule.setToneMeter(decoder.getToneMeter());   //Rod build: tone heard, in the call details
+        modules.add(audioModule);
     }
 
     /**

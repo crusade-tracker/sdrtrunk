@@ -80,6 +80,7 @@ public class NBFMDecoder extends SquelchControlDecoder implements ISourceEventLi
     private List<CTCSSCode> mConfiguredCTCSSCodes = new ArrayList<>();
     private Set<DCSCode> mConfiguredDCSCodes = new HashSet<>();
     private CTCSSDetector mCTCSSDetector = null;
+    private final ToneMeter mToneMeter = new ToneMeter();   //Rod build: tone heard on each transmission (measurement only)
     private DCSDecoder mDCSDetector = null;
     private boolean mMute = true;
 
@@ -122,6 +123,10 @@ public class NBFMDecoder extends SquelchControlDecoder implements ISourceEventLi
 
         //Notify the decoder state of call starts and ends
         mNoiseSquelch.setSquelchStateListener(squelchState -> {
+            if(squelchState == SquelchState.UNSQUELCH)
+            {
+                mToneMeter.reset();   //Rod build: a new transmission
+            }
             if(squelchState == SquelchState.SQUELCH && !mSquelchDecoderEnabled)
             {
                 notifyCallEnd();
@@ -136,6 +141,14 @@ public class NBFMDecoder extends SquelchControlDecoder implements ISourceEventLi
                 }
             }
         });
+    }
+
+    /**
+     * Rod build: the tone meter, so the audio module can put the tone heard into the call's details
+     */
+    public ToneMeter getToneMeter()
+    {
+        return mToneMeter;
     }
 
     /**
@@ -505,6 +518,7 @@ public class NBFMDecoder extends SquelchControlDecoder implements ISourceEventLi
     {
         if(!mNoiseSquelch.isSquelched())
         {
+            mToneMeter.measure(resampled);   //Rod build: measurement only, before any audio filter
             if(mCTCSSDetector != null)
             {
                 CTCSSMessage ctcssMessage = mCTCSSDetector.process(resampled);

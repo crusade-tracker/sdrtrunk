@@ -176,6 +176,33 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
         return mEndGapMs;
     }
 
+    //Rod build: NBFM - CTCSS tone heard most ("100.0" or null), blocks with it, blocks measured (64 ms each)
+    private volatile String mTone;
+    private volatile int mToneHits;
+    private volatile int mToneBlocks;
+
+    public void setTone(String tone, int hits, int blocks)
+    {
+        mTone = tone;
+        mToneHits = hits;
+        mToneBlocks = blocks;
+    }
+
+    public String getTone()
+    {
+        return mTone;
+    }
+
+    public int getToneHits()
+    {
+        return mToneHits;
+    }
+
+    public int getToneBlocks()
+    {
+        return mToneBlocks;
+    }
+
     /**
      * Creation timestamp for this audio segment
      * @return long milliseconds since epoch

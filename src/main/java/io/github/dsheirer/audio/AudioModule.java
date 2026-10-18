@@ -47,6 +47,7 @@ public class AudioModule extends AbstractAudioModule implements ISquelchStateLis
     private List<AbstractAudioFilter>mAudioFilters;
     private final SquelchStateListener mSquelchStateListener = new SquelchStateListener();
     private SquelchState mSquelchState = SquelchState.SQUELCH;
+    private io.github.dsheirer.module.decode.nbfm.ToneMeter mToneMeter;   //Rod build: NBFM tone heard (may be null)
 
     /**
      * Creates an Audio Module.
@@ -114,6 +115,14 @@ public class AudioModule extends AbstractAudioModule implements ISquelchStateLis
         }
     }
 
+    /**
+     * Rod build: NBFM channels - the tone meter whose result goes into each call's details
+     */
+    public void setToneMeter(io.github.dsheirer.module.decode.nbfm.ToneMeter toneMeter)
+    {
+        mToneMeter = toneMeter;
+    }
+
     @Override
     public Listener<float[]> getBufferListener()
     {
@@ -137,6 +146,12 @@ public class AudioModule extends AbstractAudioModule implements ISquelchStateLis
 
                 if(mSquelchState == SquelchState.SQUELCH)
                 {
+                    AudioSegment segment = getCurrentAudioSegment();
+                    if(mToneMeter != null && segment != null)
+                    {
+                        Object[] r = mToneMeter.result();
+                        segment.setTone((String)r[0], (Integer)r[1], (Integer)r[2]);
+                    }
                     closeAudioSegment();
                 }
             }

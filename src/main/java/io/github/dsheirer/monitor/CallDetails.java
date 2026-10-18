@@ -311,6 +311,16 @@ public class CallDetails
                 d.put("voice", voice);
             }
 
+            //NBFM: the CTCSS tone heard most on this call (null = none strong enough), blocks with it, blocks measured
+            if(segment.getToneBlocks() > 0)
+            {
+                Map<String,Object> tone = new LinkedHashMap<>();
+                tone.put("hz", segment.getTone());
+                tone.put("hits", segment.getToneHits());
+                tone.put("blocks", segment.getToneBlocks());
+                d.put("tone", tone);
+            }
+
             //Why the call ended (P25 Phase 1): channel state it changed to, last message received, ms since last voice frame
             if(segment.getEndState() != null)
             {
