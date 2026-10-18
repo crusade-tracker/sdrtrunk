@@ -3433,7 +3433,7 @@ public class StatusReporter
     @SuppressWarnings("unchecked")
     private String saveAlias(String key, Map<String,Object> e) throws Exception
     {
-        boolean isNew = key == null || key.isBlank();
+        boolean isNew = key == null || key.isBlank() || "-".equals(key);
         Alias alias = isNew ? null : findAlias(key);
 
         String name = e.get("name") != null ? String.valueOf(e.get("name")).trim() : (isNew ? "" : alias.getName());
