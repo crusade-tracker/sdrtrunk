@@ -37,6 +37,7 @@ import io.github.dsheirer.controller.channel.ChannelException;
 import io.github.dsheirer.controller.channel.ChannelModel;
 import io.github.dsheirer.controller.channel.ChannelProcessingManager;
 import io.github.dsheirer.alias.id.priority.Priority;
+import io.github.dsheirer.protocol.Protocol;
 import io.github.dsheirer.identifier.Form;
 import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierClass;
@@ -524,8 +525,9 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version"));
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management"));
             body.put("aliasVersion", mAliasVersion.get());
+            body.put("callManagement", callManagementReport());
             try
             {
                 body.put("streams", streamsReport());   //Streaming tab: configurations, status, fields (no passwords / keys)
@@ -690,6 +692,17 @@ public class StatusReporter
                         m.put("rsp", rspReport(rsp, dt.getTunerConfiguration()));   //the RSP editor's settings
                     }
                     catch(Exception rspEx)
+                    {
+                        //not readable right now - next report
+                    }
+                }
+                if(tc instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerController rtl)
+                {
+                    try
+                    {
+                        m.put("rtl", rtlReport(rtl, dt.getTunerConfiguration()));   //the RTL-SDR editor's settings
+                    }
+                    catch(Exception rtlEx)
                     {
                         //not readable right now - next report
                     }
@@ -1420,6 +1433,24 @@ public class StatusReporter
                 Map<String,Object> request = parseValue(value);
                 return onFxThread(() -> importAliases(request));
             }
+            case "alias_save":
+            {
+                //Rod build: the admin alias editor's Save - a new alias (no key) or a change to one (target = key)
+                Map<String,Object> edit = parseValue(value);
+                return onFxThread(() -> saveAlias(target, edit));
+            }
+            case "alias_clone":
+                return onFxThread(() -> cloneAlias(target));
+            case "alias_delete":
+            {
+                Map<String,Object> v = parseValue(value);
+                return onFxThread(() -> deleteAliases(v));
+            }
+            case "alias_move":
+            {
+                Map<String,Object> v = parseValue(value);
+                return onFxThread(() -> moveAliases(v));
+            }
             case "tuner_minmax":
             {
                 //Same as typing Min / Max on SDR-Trunk's Tuners tab, but set exactly as given: that tab won't keep a
@@ -1465,6 +1496,17 @@ public class StatusReporter
                 }
                 return dt.getId() + ": " + rspApply(rsp, dt.getTunerConfiguration(), parseValue(value));
             }
+            case "tuner_rtl":
+            {
+                DiscoveredTuner dt = findTuner(target);
+                if(!dt.hasTuner() || !(dt.getTuner().getTunerController() instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerController rtl))
+                {
+                    throw new Exception(dt.getId() + " isn't a running RTL-SDR");
+                }
+                return dt.getId() + ": " + rtlApply(rtl, dt.getTunerConfiguration(), parseValue(value));
+            }
+            case "call_management":
+                return callManagementApply(parseValue(value));
             case "tuner_autoppm":
             {
                 DiscoveredTuner dt = findTuner(target);
@@ -2544,6 +2586,216 @@ public class StatusReporter
         return String.join(", ", done) + " (saved)";
     }
 
+    // ---------------------------------------------------------------- RTL-SDR settings (admin Tuners page)
+    // The same settings as SDR-Trunk's RTL-SDR (R820T / R828D) tuner editor: Bias-T, sample rate, master gain and -
+    // with master gain on Manual - mixer, LNA and VGA gain. Other RTL tuner chips only report sample rate and Bias-T.
+
+    private static List<List<String>> enumOptions(Enum<?>[] values)
+    {
+        List<List<String>> out = new ArrayList<>();
+        for(Enum<?> e: values)
+        {
+            out.add(List.of(e.name(), e.toString()));
+        }
+        return out;
+    }
+
+    private Map<String,Object> rtlReport(io.github.dsheirer.source.tuner.rtl.RTL2832TunerController rtl, TunerConfiguration config)
+    {
+        Map<String,Object> r = new LinkedHashMap<>();
+        r.put("biasT", rtl.isBiasT());
+        if(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc && rc.getSampleRate() != null)
+        {
+            r.put("sampleRate", rc.getSampleRate().name());
+        }
+        r.put("sampleRates", enumOptions(io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.SampleRate.values()));
+        if(config instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xTunerConfiguration c &&
+            rtl.getEmbeddedTuner() instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner)
+        {
+            r.put("gains", true);
+            r.put("masterGain", c.getMasterGain() != null ? c.getMasterGain().name() : null);
+            r.put("mixerGain", c.getMixerGain() != null ? c.getMixerGain().name() : null);
+            r.put("lnaGain", c.getLNAGain() != null ? c.getLNAGain().name() : null);
+            r.put("vgaGain", c.getVGAGain() != null ? c.getVGAGain().name() : null);
+            r.put("masterGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.values()));
+            r.put("mixerGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain.values()));
+            r.put("lnaGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain.values()));
+            r.put("vgaGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain.values()));
+        }
+        return r;
+    }
+
+    private String rtlApply(io.github.dsheirer.source.tuner.rtl.RTL2832TunerController rtl, TunerConfiguration config,
+                            Map<String,Object> v) throws Exception
+    {
+        List<String> done = new ArrayList<>();
+        if(v.get("biasT") instanceof Boolean on)
+        {
+            rtl.setBiasT(on);
+            if(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc)
+            {
+                rc.setBiasT(on);
+            }
+            done.add("Bias-T " + (on ? "on" : "off"));
+        }
+        if(v.get("sampleRate") != null)
+        {
+            io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.SampleRate rate;
+            try
+            {
+                rate = io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.SampleRate.valueOf(str(v.get("sampleRate")));
+            }
+            catch(IllegalArgumentException iae)
+            {
+                throw new Exception("unknown sample rate " + v.get("sampleRate"));
+            }
+            rtl.setSampleRate(rate);
+            if(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc)
+            {
+                rc.setSampleRate(rate);
+                //Same as the editor: widen Max if the Min-Max range is now narrower than the sample rate
+                if(rc.getMaximumFrequency() - rc.getMinimumFrequency() < rate.getRate() &&
+                    rc.getMinimumFrequency() + rate.getRate() <= rtl.getMaximumFrequency())
+                {
+                    rc.setMaximumFrequency(rc.getMinimumFrequency() + rate.getRate());
+                }
+            }
+            done.add("sample rate " + rate.getLabel());
+        }
+        boolean gains = v.containsKey("masterGain") || v.containsKey("mixerGain") || v.containsKey("lnaGain") || v.containsKey("vgaGain");
+        if(gains)
+        {
+            if(!(config instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xTunerConfiguration c) ||
+                !(rtl.getEmbeddedTuner() instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner tuner))
+            {
+                throw new Exception("gain settings are only available for R820T / R828D tuners here - change them in SDR-Trunk");
+            }
+            try
+            {
+                if(v.get("masterGain") != null)
+                {
+                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain mg =
+                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.valueOf(str(v.get("masterGain")));
+                    tuner.setGain(mg, true);
+                    c.setMasterGain(mg);
+                    //Like the editor: a preset master gain also sets the three gains it stands for
+                    if(mg != io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.MANUAL)
+                    {
+                        c.setMixerGain(mg.getMixerGain());
+                        c.setLNAGain(mg.getLNAGain());
+                        c.setVGAGain(mg.getVGAGain());
+                    }
+                    done.add("master gain " + mg);
+                }
+                boolean manual = c.getMasterGain() == io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.MANUAL;
+                if((v.get("mixerGain") != null || v.get("lnaGain") != null || v.get("vgaGain") != null) && !manual)
+                {
+                    throw new Exception("set master gain to Manual to change mixer, LNA or VGA gain");
+                }
+                if(v.get("mixerGain") != null)
+                {
+                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain g =
+                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain.valueOf(str(v.get("mixerGain")));
+                    tuner.setMixerGain(g, true);
+                    c.setMixerGain(g);
+                    done.add("mixer gain " + g);
+                }
+                if(v.get("lnaGain") != null)
+                {
+                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain g =
+                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain.valueOf(str(v.get("lnaGain")));
+                    tuner.setLNAGain(g, true);
+                    c.setLNAGain(g);
+                    done.add("LNA gain " + g);
+                }
+                if(v.get("vgaGain") != null)
+                {
+                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain g =
+                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain.valueOf(str(v.get("vgaGain")));
+                    tuner.setVGAGain(g, true);
+                    c.setVGAGain(g);
+                    done.add("VGA gain " + g);
+                }
+            }
+            catch(IllegalArgumentException iae)
+            {
+                throw new Exception("unknown gain setting: " + iae.getMessage());
+            }
+        }
+        if(done.isEmpty())
+        {
+            throw new Exception("nothing to change");
+        }
+        mTunerManager.saveConfigurations();
+        return String.join(", ", done) + " (saved)";
+    }
+
+    // ---------------------------------------------------------------- Call Management (User Preferences)
+
+    private Map<String,Object> callManagementReport()
+    {
+        io.github.dsheirer.preference.duplicate.CallManagementPreference p = mUserPreferences.getCallManagementPreference();
+        Map<String,Object> m = new LinkedHashMap<>();
+        m.put("byTalkgroup", p.isDuplicateCallDetectionByTalkgroupEnabled());
+        m.put("byRadio", p.isDuplicateCallDetectionByRadioEnabled());
+        m.put("suppressListening", p.isDuplicatePlaybackSuppressionEnabled());
+        m.put("suppressRecording", p.isDuplicateRecordingSuppressionEnabled());
+        m.put("suppressStreaming", p.isDuplicateStreamingSuppressionEnabled());
+        m.put("patchGroupStreaming", p.getPatchGroupStreamingOption() != null ? p.getPatchGroupStreamingOption().name() : null);
+        m.put("patchGroupOptions", enumOptions(io.github.dsheirer.audio.broadcast.PatchGroupStreamingOption.values()));
+        return m;
+    }
+
+    private String callManagementApply(Map<String,Object> v) throws Exception
+    {
+        io.github.dsheirer.preference.duplicate.CallManagementPreference p = mUserPreferences.getCallManagementPreference();
+        List<String> done = new ArrayList<>();
+        if(v.get("byTalkgroup") instanceof Boolean b)
+        {
+            p.setDuplicateCallDetectionByTalkgroupEnabled(b);
+            done.add("duplicate detection by talkgroup " + (b ? "on" : "off"));
+        }
+        if(v.get("byRadio") instanceof Boolean b)
+        {
+            p.setDuplicateCallDetectionByRadioEnabled(b);
+            done.add("duplicate detection by radio ID " + (b ? "on" : "off"));
+        }
+        if(v.get("suppressListening") instanceof Boolean b)
+        {
+            p.setDuplicatePlaybackSuppressionEnabled(b);
+            done.add("suppress duplicates when listening " + (b ? "on" : "off"));
+        }
+        if(v.get("suppressRecording") instanceof Boolean b)
+        {
+            p.setDuplicateRecordingSuppressionEnabled(b);
+            done.add("suppress duplicates when recording " + (b ? "on" : "off"));
+        }
+        if(v.get("suppressStreaming") instanceof Boolean b)
+        {
+            p.setDuplicateStreamingSuppressionEnabled(b);
+            done.add("suppress duplicates when streaming " + (b ? "on" : "off"));
+        }
+        if(v.get("patchGroupStreaming") != null)
+        {
+            io.github.dsheirer.audio.broadcast.PatchGroupStreamingOption o;
+            try
+            {
+                o = io.github.dsheirer.audio.broadcast.PatchGroupStreamingOption.valueOf(str(v.get("patchGroupStreaming")));
+            }
+            catch(IllegalArgumentException iae)
+            {
+                throw new Exception("unknown patch group streaming option");
+            }
+            p.setPatchGroupStreamingOption(o);
+            done.add("patch group streaming: " + o);
+        }
+        if(done.isEmpty())
+        {
+            throw new Exception("nothing to change");
+        }
+        return "Call Management: " + String.join(", ", done) + " (saved)";
+    }
+
     private static void invoke(Object o, String name, Object arg) throws Exception
     {
         java.lang.reflect.Method method = findMethod(o, name, 1);
@@ -3064,6 +3316,9 @@ public class StatusReporter
             }
             a.put("tgs", tgs);
             a.put("ids", other);
+            a.put("idList", aliasIdList(alias));   //Rod build: structured identifiers for the admin alias editor
+            a.put("color", alias.getColor());
+            a.put("icon", alias.getIconName());
             a.put("listen", alias.getPlaybackPriority() != Priority.DO_NOT_MONITOR);
             a.put("priority", alias.getPlaybackPriority());
             a.put("record", alias.isRecordable());
@@ -3072,7 +3327,377 @@ public class StatusReporter
             aliases.add(a);
         }
         data.put("aliases", aliases);
+        //For the admin alias editor: SDR-Trunk's icons and the protocols its identifier editors offer
+        List<String> icons = new ArrayList<>();
+        try
+        {
+            new ArrayList<>(mPlaylistManager.getIconModel().iconsProperty()).forEach(i -> icons.add(i.getName()));
+        }
+        catch(Exception e)
+        {
+            //no icon model - the editor just shows the current icon name
+        }
+        data.put("icons", icons);
+        data.put("tgProtocols", Protocol.TALKGROUP_PROTOCOLS.stream().map(Enum::name).toList());
+        data.put("radioProtocols", Protocol.RADIO_ID_PROTOCOLS.stream().map(Enum::name).toList());
         return data;
+    }
+
+    /**
+     * Rod build: the identifiers the admin alias editor can change (talkgroup, talkgroup range, radio ID, radio ID
+     * range). Everything else on the alias (tones, ESN, streams, priority ...) is left as it is by alias_save.
+     */
+    private static List<Map<String,Object>> aliasIdList(Alias alias)
+    {
+        List<Map<String,Object>> out = new ArrayList<>();
+        for(io.github.dsheirer.alias.id.AliasID id: alias.getAliasIdentifiers())
+        {
+            Map<String,Object> m = new LinkedHashMap<>();
+            if(id instanceof io.github.dsheirer.alias.id.talkgroup.Talkgroup t)
+            {
+                m.put("type", "tg"); m.put("protocol", t.getProtocol().name()); m.put("value", t.getValue());
+            }
+            else if(id instanceof io.github.dsheirer.alias.id.talkgroup.TalkgroupRange r)
+            {
+                m.put("type", "tgr"); m.put("protocol", r.getProtocol().name()); m.put("min", r.getMinTalkgroup()); m.put("max", r.getMaxTalkgroup());
+            }
+            else if(id instanceof io.github.dsheirer.alias.id.radio.Radio r)
+            {
+                m.put("type", "radio"); m.put("protocol", r.getProtocol().name()); m.put("value", r.getValue());
+            }
+            else if(id instanceof io.github.dsheirer.alias.id.radio.RadioRange r)
+            {
+                m.put("type", "radior"); m.put("protocol", r.getProtocol().name()); m.put("min", r.getMinRadio()); m.put("max", r.getMaxRadio());
+            }
+            else if(id != null && !(id instanceof io.github.dsheirer.alias.id.broadcast.BroadcastChannel) &&
+                !(id instanceof Priority) && !(id instanceof io.github.dsheirer.alias.id.record.Record))
+            {
+                m.put("type", "other"); m.put("text", id.toString());   //shown read-only, kept on save
+            }
+            else
+            {
+                continue;
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
+    private static boolean isEditableId(io.github.dsheirer.alias.id.AliasID id)
+    {
+        return id instanceof io.github.dsheirer.alias.id.talkgroup.Talkgroup ||
+            id instanceof io.github.dsheirer.alias.id.talkgroup.TalkgroupRange ||
+            id instanceof io.github.dsheirer.alias.id.radio.Radio ||
+            id instanceof io.github.dsheirer.alias.id.radio.RadioRange;
+    }
+
+    private static int idNumber(Object o, String what) throws Exception
+    {
+        try
+        {
+            long v = Long.parseLong(String.valueOf(o).trim());
+            if(v < 0 || v > 0xFFFFFF)
+            {
+                throw new NumberFormatException();
+            }
+            return (int)v;
+        }
+        catch(NumberFormatException nfe)
+        {
+            throw new Exception(what + " must be a whole number from 0 to 16777215");
+        }
+    }
+
+    private static Protocol idProtocol(Object o, java.util.EnumSet<Protocol> allowed, String what) throws Exception
+    {
+        try
+        {
+            Protocol p = Protocol.valueOf(String.valueOf(o));
+            if(allowed.contains(p))
+            {
+                return p;
+            }
+        }
+        catch(IllegalArgumentException iae)
+        {
+            //fall through
+        }
+        throw new Exception(what + ": protocol '" + o + "' isn't one SDR-Trunk offers for it");
+    }
+
+    /**
+     * Rod build: admin alias editor Save. target = the alias key (empty for a new alias). The value has the fields to
+     * set: list, name, group, color (#RRGGBB or empty), icon, listen, priority (1-100), record, skip, streams (names)
+     * and ids (talkgroup / radio identifiers - these replace the alias's existing ones of those kinds).
+     */
+    @SuppressWarnings("unchecked")
+    private String saveAlias(String key, Map<String,Object> e) throws Exception
+    {
+        boolean isNew = key == null || key.isBlank();
+        Alias alias = isNew ? null : findAlias(key);
+
+        String name = e.get("name") != null ? String.valueOf(e.get("name")).trim() : (isNew ? "" : alias.getName());
+        if(name.isEmpty())
+        {
+            throw new Exception("the alias needs a name");
+        }
+        String list = e.get("list") != null ? String.valueOf(e.get("list")).trim() : (isNew ? "" : alias.getAliasListName());
+        if(list.isEmpty())
+        {
+            throw new Exception("no alias list given");
+        }
+
+        //Check everything first, so a bad value changes nothing
+        List<io.github.dsheirer.alias.id.AliasID> newIds = null;
+        if(e.get("ids") instanceof List<?> ids)
+        {
+            newIds = new ArrayList<>();
+            int n = 0;
+            for(Object o: ids)
+            {
+                n++;
+                if(!(o instanceof Map<?,?> m))
+                {
+                    continue;
+                }
+                String type = String.valueOf(m.get("type"));
+                String what = "identifier " + n;
+                switch(type)
+                {
+                    case "tg" -> newIds.add(new io.github.dsheirer.alias.id.talkgroup.Talkgroup(
+                        idProtocol(m.get("protocol"), Protocol.TALKGROUP_PROTOCOLS, what), idNumber(m.get("value"), what)));
+                    case "radio" -> newIds.add(new io.github.dsheirer.alias.id.radio.Radio(
+                        idProtocol(m.get("protocol"), Protocol.RADIO_ID_PROTOCOLS, what), idNumber(m.get("value"), what)));
+                    case "tgr", "radior" ->
+                    {
+                        int min = idNumber(m.get("min"), what), max = idNumber(m.get("max"), what);
+                        if(min >= max)
+                        {
+                            throw new Exception(what + ": the range's first number must be lower than its last");
+                        }
+                        newIds.add(type.equals("tgr")
+                            ? new io.github.dsheirer.alias.id.talkgroup.TalkgroupRange(idProtocol(m.get("protocol"), Protocol.TALKGROUP_PROTOCOLS, what), min, max)
+                            : new io.github.dsheirer.alias.id.radio.RadioRange(idProtocol(m.get("protocol"), Protocol.RADIO_ID_PROTOCOLS, what), min, max));
+                    }
+                    default -> throw new Exception(what + ": unknown kind '" + type + "'");
+                }
+            }
+        }
+        Integer color = null;
+        if(e.containsKey("color"))
+        {
+            String c = e.get("color") != null ? String.valueOf(e.get("color")).trim() : "";
+            if(c.isEmpty())
+            {
+                color = 0;
+            }
+            else if(c.matches("#[0-9a-fA-F]{6}"))
+            {
+                color = 0xFF000000 | Integer.parseInt(c.substring(1), 16);
+            }
+            else
+            {
+                throw new Exception("color must look like #RRGGBB");
+            }
+        }
+        Integer priority = null;
+        if(e.get("priority") != null && !String.valueOf(e.get("priority")).isBlank())
+        {
+            try
+            {
+                priority = Integer.parseInt(String.valueOf(e.get("priority")).trim());
+            }
+            catch(NumberFormatException nfe)
+            {
+                priority = -2;
+            }
+            if(priority < Priority.MIN_PRIORITY || priority > Priority.MAX_PRIORITY)
+            {
+                throw new Exception("priority must be 1 to 100 (1 is highest)");
+            }
+        }
+        List<String> streams = null;
+        if(e.get("streams") instanceof List<?> ls)
+        {
+            Set<String> known = new java.util.HashSet<>();
+            new ArrayList<>(mBroadcastModel.getBroadcastConfigurations()).forEach(c -> known.add(c.getName()));
+            streams = new ArrayList<>();
+            for(Object o: ls)
+            {
+                if(!known.contains(String.valueOf(o)))
+                {
+                    throw new Exception("there's no stream called '" + o + "' in SDR-Trunk");
+                }
+                streams.add(String.valueOf(o));
+            }
+        }
+
+        //Apply
+        if(isNew)
+        {
+            alias = new Alias(name);
+            alias.setAliasListName(list);
+        }
+        else
+        {
+            alias.setName(name);
+            if(!list.equals(alias.getAliasListName()))
+            {
+                moveAlias(alias, list);
+            }
+        }
+        if(e.containsKey("group"))
+        {
+            alias.setGroup(e.get("group") != null ? String.valueOf(e.get("group")).trim() : null);
+        }
+        if(color != null)
+        {
+            alias.setColor(color);
+        }
+        if(e.containsKey("icon"))
+        {
+            String icon = e.get("icon") != null ? String.valueOf(e.get("icon")).trim() : "";
+            alias.setIconName(icon.isEmpty() ? null : icon);
+        }
+        if(e.get("record") instanceof Boolean record)
+        {
+            alias.setRecordable(record);
+        }
+        if(e.get("skip") instanceof Boolean skip)
+        {
+            alias.setSkipDecode(skip);
+        }
+        if(e.get("listen") instanceof Boolean listen)
+        {
+            alias.setCallPriority(!listen ? Priority.DO_NOT_MONITOR : priority != null ? priority : Priority.DEFAULT_PRIORITY);
+        }
+        else if(priority != null)
+        {
+            alias.setCallPriority(priority);
+        }
+        if(newIds != null)
+        {
+            for(io.github.dsheirer.alias.id.AliasID old: new ArrayList<>(alias.getAliasIdentifiers()))
+            {
+                if(isEditableId(old))
+                {
+                    alias.removeAliasID(old);
+                }
+            }
+            newIds.forEach(alias::addAliasID);
+        }
+        if(streams != null)
+        {
+            for(io.github.dsheirer.alias.id.AliasID old: new ArrayList<>(alias.getAliasIdentifiers()))
+            {
+                if(old instanceof io.github.dsheirer.alias.id.broadcast.BroadcastChannel bc && !streams.contains(bc.getChannelName()))
+                {
+                    alias.removeBroadcastChannel(bc.getChannelName());
+                }
+            }
+            for(String st: streams)
+            {
+                if(!alias.hasBroadcastChannel(st))
+                {
+                    alias.addAliasID(new io.github.dsheirer.alias.id.broadcast.BroadcastChannel(st));
+                }
+            }
+        }
+        if(isNew)
+        {
+            mAliasModel.addAliasList(list);
+            mAliasModel.addAlias(alias);
+        }
+        mAliasVersion.incrementAndGet();
+        mPlaylistManager.schedulePlaylistSave();
+        return (isNew ? "New alias " : "") + name + " saved in " + list;
+    }
+
+    private void moveAlias(Alias alias, String list)
+    {
+        //Same steps as SDR-Trunk's Move To button
+        mAliasModel.addAliasList(list);
+        io.github.dsheirer.alias.AliasList existing = mAliasModel.getAliasList(alias.getAliasListName());
+        if(existing != null)
+        {
+            existing.removeAlias(alias);
+        }
+        alias.setAliasListName(list);
+        io.github.dsheirer.alias.AliasList moveTo = mAliasModel.getAliasList(list);
+        if(moveTo != null)
+        {
+            moveTo.addAlias(alias);
+        }
+    }
+
+    /**
+     * Rod build: SDR-Trunk's Clone button - a copy of the alias's name, list, group, color, icon, record and skip
+     * decode settings, without its identifiers or streams (SDR-Trunk's clone works the same way).
+     */
+    private String cloneAlias(String key) throws Exception
+    {
+        Alias original = findAlias(key);
+        Alias copy = io.github.dsheirer.alias.AliasFactory.shallowCopyOf(original);
+        mAliasModel.addAlias(copy);
+        mAliasVersion.incrementAndGet();
+        mPlaylistManager.schedulePlaylistSave();
+        return "Cloned " + original.getName() + " (the copy has no identifiers or streams yet)";
+    }
+
+    private String deleteAliases(Map<String,Object> v) throws Exception
+    {
+        List<Alias> found = new ArrayList<>();
+        int missing = 0;
+        for(Object k: v.get("keys") instanceof List<?> l ? l : List.of())
+        {
+            try
+            {
+                found.add(findAlias(String.valueOf(k)));
+            }
+            catch(Exception notFound)
+            {
+                missing++;
+            }
+        }
+        if(found.isEmpty())
+        {
+            throw new Exception("no aliases found to delete - reload the list");
+        }
+        mAliasModel.removeAliases(found);
+        mAliasVersion.incrementAndGet();
+        mPlaylistManager.schedulePlaylistSave();
+        return found.size() + " alias" + (found.size() == 1 ? "" : "es") + " deleted" +
+            (missing > 0 ? " - " + missing + " not found (changed in SDR-Trunk since the list was read)" : "") + " (saved)";
+    }
+
+    private String moveAliases(Map<String,Object> v) throws Exception
+    {
+        String list = v.get("list") != null ? String.valueOf(v.get("list")).trim() : "";
+        if(list.isEmpty())
+        {
+            throw new Exception("no alias list given");
+        }
+        int moved = 0, missing = 0;
+        for(Object k: v.get("keys") instanceof List<?> l ? l : List.of())
+        {
+            try
+            {
+                Alias alias = findAlias(String.valueOf(k));
+                if(!list.equals(alias.getAliasListName()))
+                {
+                    moveAlias(alias, list);
+                    moved++;
+                }
+            }
+            catch(Exception notFound)
+            {
+                missing++;
+            }
+        }
+        mAliasVersion.incrementAndGet();
+        mPlaylistManager.schedulePlaylistSave();
+        return moved + " alias" + (moved == 1 ? "" : "es") + " moved to " + list +
+            (missing > 0 ? " - " + missing + " not found (changed in SDR-Trunk since the list was read)" : "") + " (saved)";
     }
 
     private Alias findAlias(String key) throws Exception
