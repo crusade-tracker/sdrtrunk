@@ -113,6 +113,9 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     public static final String MAX_TRAFFIC_CHANNELS_EXCEEDED = "MAX TRAFFIC CHANNELS EXCEEDED";
     public static final String IGNORED_DO_NOT_MONITOR = "IGNORED: DO NOT MONITOR";
     public static final String IGNORED_SKIP_DECODE = "IGNORED: SKIP DECODE";
+    //Rod build: channel set to follow aliased talkgroups only, and this talkgroup has no alias
+    public static final String IGNORED_NO_ALIAS = "IGNORED: NO ALIAS";
+    private boolean mFollowAliasedOnly = false;
 
     private Queue<Channel> mAvailablePhase1TrafficChannelQueue = new LinkedTransferQueue<>();
     private Queue<Channel> mAvailablePhase2TrafficChannelQueue = new LinkedTransferQueue<>();
@@ -145,6 +148,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     public P25TrafficChannelManager(Channel parentChannel)
     {
         mParentChannel = parentChannel;
+        if(parentChannel.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 p25)
+        {
+            mFollowAliasedOnly = p25.getFollowAliasedOnly();   //Rod build
+        }
 
         if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase1 phase1)
         {
@@ -1199,9 +1206,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 return IGNORED_SKIP_DECODE;
             }
-            return isSkipDecode(pgi.getValue().getPatchGroup()) ? IGNORED_SKIP_DECODE : IGNORED_DO_NOT_MONITOR;
+            return isSkipDecode(pgi.getValue().getPatchGroup()) ? IGNORED_SKIP_DECODE :
+                mFollowAliasedOnly ? IGNORED_NO_ALIAS : IGNORED_DO_NOT_MONITOR;
         }
-        return isSkipDecode(to) ? IGNORED_SKIP_DECODE : IGNORED_DO_NOT_MONITOR;
+        return isSkipDecode(to) ? IGNORED_SKIP_DECODE : isUnaliasedNotFollowed(to) ? IGNORED_NO_ALIAS : IGNORED_DO_NOT_MONITOR;
     }
 
     /**
@@ -1305,7 +1313,15 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             }
         }
 
-        return false;
+        return isUnaliasedNotFollowed(talkgroup);
+    }
+
+    /**
+     * Rod build: the channel follows aliased talkgroups only and this talkgroup has no alias in its alias list.
+     */
+    private boolean isUnaliasedNotFollowed(Identifier talkgroup)
+    {
+        return mFollowAliasedOnly && talkgroup != null && mAliasList != null && mAliasList.getAliases(talkgroup).isEmpty();
     }
 
     /**

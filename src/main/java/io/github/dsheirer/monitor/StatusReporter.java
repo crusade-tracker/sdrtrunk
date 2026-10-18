@@ -228,6 +228,18 @@ public class StatusReporter
                 default -> null;
             };
 
+            //Rod build: calls not followed because the talkgroup has no alias (channel follows aliased talkgroups only) -
+            //seen on the control channel; listed with the talkgroups that don't reach the scanner
+            if(kind == null && event.getDetails() != null &&
+                event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_NO_ALIAS))
+            {
+                if(mSeenEvents.add(event))
+                {
+                    noteNotFollowed(event);
+                }
+                return;
+            }
+
             //Calls this build skipped for Do Not Monitor arrive as normal call events with an IGNORED note
             if(kind == null && event.getDetails() != null &&
                 (event.getDetails().startsWith(io.github.dsheirer.module.decode.p25.P25TrafficChannelManager.IGNORED_DO_NOT_MONITOR) ||
@@ -302,6 +314,65 @@ public class StatusReporter
     }
 
     /**
+     * Adds one call to the list of talkgroups that don't reach the scanner (keyed by system / site / talkgroup)
+     */
+    private void noteUnstreamed(IDecodeEvent event, IdentifierCollection ic, Identifier to, String alias, String reason)
+    {
+        String system = configValue(ic, Form.SYSTEM);
+        String site = configValue(ic, Form.SITE);
+        String tg = String.valueOf(to.getValue());
+        String key = system + "|" + site + "|" + tg;
+        Long freq = event.getChannelDescriptor() != null ? event.getChannelDescriptor().getDownlinkFrequency() : null;
+        long t = event.getTimeStart() > 0 ? event.getTimeStart() : System.currentTimeMillis();
+
+        mUnstreamed.compute(key, (k, m) -> {
+            if(m == null)
+            {
+                m = new LinkedHashMap<>();
+                m.put("system", system);
+                m.put("site", site);
+                m.put("tg", tg);
+                m.put("count", 0);
+                m.put("first", t);
+            }
+            m.put("alias", alias);
+            m.put("reason", reason);
+            m.put("freq", freq);
+            m.put("last", t);
+            m.put("count", (Integer)m.get("count") + 1);
+            return m;
+        });
+    }
+
+    /**
+     * Rod build: a call the channel didn't follow because the talkgroup has no alias (follow aliased talkgroups only).
+     * Listed with the talkgroups that don't reach the scanner, so new talkgroups still show up.
+     */
+    private void noteNotFollowed(IDecodeEvent event)
+    {
+        IdentifierCollection ic = event.getIdentifierCollection();
+        if(ic == null)
+        {
+            return;
+        }
+        Identifier to = ic.getToIdentifier();
+        if(to == null)
+        {
+            return;
+        }
+        if(to instanceof io.github.dsheirer.identifier.patch.PatchGroupIdentifier pgi && pgi.getValue() != null &&
+            pgi.getValue().getPatchGroup() != null)
+        {
+            to = pgi.getValue().getPatchGroup();   //a patch nobody is aliased in: list the patch group talkgroup
+        }
+        if(to.getForm() != Form.TALKGROUP && to.getForm() != Form.PATCH_GROUP)
+        {
+            return;
+        }
+        noteUnstreamed(event, ic, to, null, "not followed");
+    }
+
+    /**
      * Notes a talkgroup call that won't reach the scanner: no alias for the talkgroup, or its alias has no broadcast
      * channel for the Rdio Scanner stream. Talkgroups set to Do Not Monitor (Listen off) are left out - that's on purpose.
      */
@@ -365,31 +436,7 @@ public class StatusReporter
             reason = "not streamed";
         }
 
-        String system = configValue(ic, Form.SYSTEM);
-        String site = configValue(ic, Form.SITE);
-        String tg = String.valueOf(to.getValue());
-        String key = system + "|" + site + "|" + tg;
-        String alias = aliases.isEmpty() ? null : aliases.get(0).getName();
-        Long freq = event.getChannelDescriptor() != null ? event.getChannelDescriptor().getDownlinkFrequency() : null;
-        long t = event.getTimeStart() > 0 ? event.getTimeStart() : System.currentTimeMillis();
-
-        mUnstreamed.compute(key, (k, m) -> {
-            if(m == null)
-            {
-                m = new LinkedHashMap<>();
-                m.put("system", system);
-                m.put("site", site);
-                m.put("tg", tg);
-                m.put("count", 0);
-                m.put("first", t);
-            }
-            m.put("alias", alias);
-            m.put("reason", reason);
-            m.put("freq", freq);
-            m.put("last", t);
-            m.put("count", (Integer)m.get("count") + 1);
-            return m;
-        });
+        noteUnstreamed(event, ic, to, aliases.isEmpty() ? null : aliases.get(0).getName(), reason);
     }
 
     private static String configValue(IdentifierCollection ic, Form form)
@@ -532,7 +579,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management"));
+            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
             body.put("aliasVersion", mAliasVersion.get());
             body.put("callManagement", callManagementReport());
             try
@@ -1008,6 +1055,7 @@ public class StatusReporter
                 {
                     m.put("poolSize", p25.getTrafficChannelPoolSize());
                     m.put("ignoreDataCalls", p25.getIgnoreDataCalls());
+                    m.put("followAliasedOnly", p25.getFollowAliasedOnly());   //Rod build
                 }
                 if(c.getDecodeConfiguration() instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1 p1)
                 {
@@ -4109,6 +4157,15 @@ public class StatusReporter
             else if(dc instanceof io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327 x) x.setTrafficChannelPoolSize(n);
             else throw new Exception("traffic channels are a trunked system setting (P25, DMR, NXDN, MPT1327)");
             done.add("traffic channels");
+        }
+        if(change.containsKey("followAliasedOnly"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25 x))
+            {
+                throw new Exception("follow aliased talkgroups only is a P25 setting");
+            }
+            x.setFollowAliasedOnly(Boolean.TRUE.equals(change.get("followAliasedOnly")));
+            done.add("follow aliased talkgroups only");
         }
         if(change.containsKey("ignoreDataCalls"))
         {

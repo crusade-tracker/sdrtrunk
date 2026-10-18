@@ -66,6 +66,24 @@ public abstract class DecodeConfigP25 extends DecodeConfiguration
         mIgnoreDoNotMonitor = ignore;
     }
 
+    //Rod build: follow only talkgroups that have an alias in this channel's alias list (off = stock: follow every call)
+    private boolean mFollowAliasedOnly = false;
+
+    /**
+     * Rod build: when on, calls to talkgroups with no alias in the channel's alias list aren't followed - no traffic
+     * channel, no tuner time. They are still seen on the control channel and reported as "not followed".
+     */
+    @JacksonXmlProperty(isAttribute = true, localName = "follow_aliased_only")
+    public boolean getFollowAliasedOnly()
+    {
+        return mFollowAliasedOnly;
+    }
+
+    public void setFollowAliasedOnly(boolean followAliasedOnly)
+    {
+        mFollowAliasedOnly = followAliasedOnly;
+    }
+
 
     @JacksonXmlProperty(isAttribute = true, localName = "traffic_channel_pool_size")
     public int getTrafficChannelPoolSize()
