@@ -318,6 +318,13 @@ public class StatusReporter
             return;
         }
 
+        //Some call events carry no channel (no alias list, system or site) - there is no way to tell which alias list
+        //applies, so they can't be judged. The same call's event from its channel is checked instead.
+        if(ic.getAliasListConfiguration() == null || !ic.getAliasListConfiguration().isValid())
+        {
+            return;
+        }
+
         List<Alias> aliases = List.of();
         AliasList list = mAliasModel.getAliasList(ic);
         if(list != null)
