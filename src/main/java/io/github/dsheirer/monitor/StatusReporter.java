@@ -4061,6 +4061,12 @@ public class StatusReporter
                 throw new Exception("there is no alias list called \"" + v + "\"");
             }
             c.setAliasListName(v.isEmpty() ? null : v);
+            //Register a new list name right away (like alias_list_create), so it shows in the alias list choices
+            //without waiting for an alias to use it
+            if(!v.isEmpty() && !mAliasModel.getListNames().contains(v))
+            {
+                mAliasModel.addAliasList(v);
+            }
             done.add("alias list");
         }
         if(change.containsKey("autoStart"))
