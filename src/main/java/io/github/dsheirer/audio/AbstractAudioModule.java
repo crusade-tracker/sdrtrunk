@@ -45,6 +45,15 @@ public abstract class AbstractAudioModule extends Module implements IAudioSegmen
     private AudioSegment mAudioSegment;
     private int mAudioSampleCount = 0;
     private boolean mRecordAudioOverride;
+    private volatile String mTunerName;   //Rod build: dongle this channel runs on, for the call details
+
+    /**
+     * Rod build: dongle (tuner) name this channel runs on, or null when unknown
+     */
+    public void setTunerName(String tunerName)
+    {
+        mTunerName = tunerName;
+    }
     private int mTimeslot;
 
     /**
@@ -123,6 +132,7 @@ public abstract class AbstractAudioModule extends Module implements IAudioSegmen
             if(mAudioSegment == null)
             {
                 mAudioSegment = new AudioSegment(mAliasList, getTimeslot());
+                mAudioSegment.setTunerName(mTunerName);   //Rod build
                 mAudioSegment.incrementConsumerCount();
                 mAudioSegment.addIdentifiers(mIdentifierCollection.getIdentifiers());
                 mIdentifierUpdateNotificationBroadcaster.addListener(mAudioSegment);

@@ -707,6 +707,16 @@ public class ProcessingChain implements Listener<ChannelEvent>
         {
             if(mSource != null)
             {
+                //Rod build: tell the audio modules which dongle this channel runs on (for the call details)
+                String tunerName = io.github.dsheirer.monitor.SourceTuners.get(mSource);
+                for(Module module: mModules)
+                {
+                    if(module instanceof io.github.dsheirer.audio.AbstractAudioModule audioModule)
+                    {
+                        audioModule.setTunerName(tunerName);
+                    }
+                }
+
                 //Broadcast the source sample rate so that each of the modules can self-configure
                 mSourceEventBroadcaster.broadcast(SourceEvent.sampleRateChange(mSource.getSampleRate(), "Processing Chain Startup"));
 

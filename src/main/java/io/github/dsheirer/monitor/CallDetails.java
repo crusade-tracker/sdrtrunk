@@ -337,6 +337,12 @@ public class CallDetails
                 d.put("ended", end);   //not "end" - that key is the call's end time
             }
 
+            //Dongle (tuner) the call was heard on - left out when unknown
+            if(segment.getTunerName() != null)
+            {
+                d.put("tuner", segment.getTunerName());
+            }
+
             return MAPPER.writeValueAsString(d);
         }
         catch(Exception e)

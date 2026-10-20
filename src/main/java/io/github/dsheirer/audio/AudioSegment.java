@@ -117,6 +117,21 @@ public class AudioSegment implements Listener<IdentifierUpdateNotification>
     }
 
     //Rod build: voice frame quality (P25 Phase 1) - frames, frames the codec had to repeat or mute, bit errors
+    private String mTunerName;   //Rod build: dongle the call was heard on
+
+    public void setTunerName(String tunerName)
+    {
+        mTunerName = tunerName;
+    }
+
+    /**
+     * Rod build: dongle (tuner) name the call was heard on, or null when unknown
+     */
+    public String getTunerName()
+    {
+        return mTunerName;
+    }
+
     private int mVoiceFrames;
     private int mBadVoiceFrames;
     private long mVoiceBitErrors;

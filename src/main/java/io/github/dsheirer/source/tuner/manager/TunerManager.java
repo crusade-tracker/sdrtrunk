@@ -630,6 +630,7 @@ public class TunerManager implements IDiscoveredTunerStatusListener
 
                         if(source != null)
                         {
+                            io.github.dsheirer.monitor.SourceTuners.put(source, discoveredTuner.getTuner().getPreferredName());   //Rod build
                             return source;
                         }
                     }
@@ -655,6 +656,10 @@ public class TunerManager implements IDiscoveredTunerStatusListener
                     {
                         source = discoveredTuner.getTuner().getChannelSourceManager().getSource(tunerChannel,
                                 channelSpecification, threadName);
+                        if(source != null)
+                        {
+                            io.github.dsheirer.monitor.SourceTuners.put(source, discoveredTuner.getTuner().getPreferredName());   //Rod build
+                        }
                     }
                     catch(Exception e)
                     {
