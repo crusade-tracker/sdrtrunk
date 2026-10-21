@@ -132,6 +132,11 @@ public class StatusReporter
     private ScheduledExecutorService mExecutor;
     //While someone has the scanner's SDR-Trunk page open, the scanner asks for a report every second instead of every 5
     private volatile long mFastUntil = 0;
+    //Close from the admin page: the command's answer goes out with the next report, then SDR-Trunk closes like File > Exit
+    private volatile Runnable mShutdownAction;
+    private volatile long mShutdownAt = 0;          //ms the close was asked for (0 = not asked)
+    private volatile int mShutdownReport = -1;      //report count when it was asked
+    private int mReportCount = 0;
     private static final int FAST_INTERVAL_SECONDS = 1;
     private static final int MAX_EVENTS = 300;
     private String mLastProblem;
@@ -189,6 +194,12 @@ public class StatusReporter
         try
         {
             report();
+            mReportCount++;
+            checkShutdown();
+        }
+        catch(Throwable t)
+        {
+            mLog.error("Status report error", t);
         }
         finally
         {
@@ -198,6 +209,39 @@ public class StatusReporter
                 executor.schedule(this::reportAndReschedule,
                     System.currentTimeMillis() < mFastUntil ? FAST_INTERVAL_SECONDS : INTERVAL_SECONDS, TimeUnit.SECONDS);
             }
+        }
+    }
+
+    /**
+     * What app_shutdown runs (File > Exit's steps). Without it the command isn't offered.
+     */
+    public void setShutdownAction(Runnable action)
+    {
+        mShutdownAction = action;
+    }
+
+    /**
+     * Closes once the report carrying the app_shutdown answer has gone out (results queue empty), or 30 s after it
+     * was asked if the server can't be reached.
+     */
+    private void checkShutdown()
+    {
+        Runnable action = mShutdownAction;
+        if(mShutdownAt == 0 || action == null)
+        {
+            return;
+        }
+        if((mReportCount > mShutdownReport && mResults.isEmpty()) || System.currentTimeMillis() - mShutdownAt > 30000)
+        {
+            mShutdownAt = 0;
+            mLog.info("Remote command: closing SDR-Trunk");
+            ScheduledExecutorService executor = mExecutor;
+            mExecutor = null;
+            if(executor != null)
+            {
+                executor.shutdown();
+            }
+            action.run();
         }
     }
 
@@ -579,7 +623,12 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            body.put("features", List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
+            List<String> features = new ArrayList<>(List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
+            if(mShutdownAction != null)
+            {
+                features.add("app_shutdown");
+            }
+            body.put("features", features);
             body.put("aliasVersion", mAliasVersion.get());
             body.put("callManagement", callManagementReport());
             try
@@ -1240,6 +1289,19 @@ public class StatusReporter
                 }
                 startChannel(c);
                 return c.getName() + " started";
+            }
+            case "app_shutdown":
+            {
+                if(mShutdownAction == null)
+                {
+                    throw new Exception("this SDR-Trunk can't be closed remotely (no window - headless)");
+                }
+                if(mShutdownAt == 0)
+                {
+                    mShutdownAt = System.currentTimeMillis();
+                    mShutdownReport = mReportCount;
+                }
+                return "closing - SDR-Trunk stops channels and tuners, saves and exits after this report";
             }
             case "channel_stop":
             {
