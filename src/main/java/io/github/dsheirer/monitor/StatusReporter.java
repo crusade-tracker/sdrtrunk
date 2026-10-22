@@ -633,7 +633,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            List<String> features = new ArrayList<>(List.of("channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
+            List<String> features = new ArrayList<>(List.of("tuner_notes", "channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
             if(mShutdownAction != null)
             {
                 features.add("app_shutdown");
@@ -783,6 +783,7 @@ public class StatusReporter
             m.put("error", dt.hasErrorMessage() ? dt.getErrorMessage() : null);
             m.put("class", dt.getTunerClass() != null ? dt.getTunerClass().toString() : null);
             m.put("enabled", dt.isEnabled());
+            m.put("note", mTunerManager.getTunerConfigurationManager().getNote(dt.getId()));
 
             if(dt.hasTuner())
             {
@@ -1316,6 +1317,14 @@ public class StatusReporter
                 }
                 startChannel(c);
                 return c.getName() + " started";
+            }
+            case "tuner_note":
+            {
+                //Same as the Note box under SDR-Trunk's tuner list; blank removes the note
+                DiscoveredTuner dt = findTuner(target);
+                String text = value == null ? "" : String.valueOf(value).trim();
+                mTunerManager.getDiscoveredTunerModel().setNote(dt, text);
+                return text.isEmpty() ? dt.getId() + " note removed (saved)" : dt.getId() + " note saved";
             }
             case "spectrum_set":
             {

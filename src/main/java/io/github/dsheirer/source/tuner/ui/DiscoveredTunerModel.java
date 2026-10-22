@@ -56,8 +56,9 @@ public class DiscoveredTunerModel extends AbstractTableModel implements Listener
     public static final int COLUMN_TUNER_TYPE = 2;
     public static final int COLUMN_FREQUENCY = 3;
     public static final int COLUMN_CHANNEL_COUNT = 4;
+    public static final int COLUMN_NOTE = 5;
     private static final String MHZ = " MHz";
-    private static final String[] COLUMN_HEADERS = {"Status","Class", "Type", "Frequency", "Channels"};
+    private static final String[] COLUMN_HEADERS = {"Status","Class", "Type", "Frequency", "Channels", "Note"};
 
     private List<DiscoveredTuner> mDiscoveredTuners = new CopyOnWriteArrayList<>();
     private List<Listener<TunerEvent>> mTunerEventListeners = new ArrayList<>();
@@ -512,6 +513,9 @@ public class DiscoveredTunerModel extends AbstractTableModel implements Listener
                     {
                         return "";
                     }
+                case COLUMN_NOTE:
+                    String note = mTunerConfigurationManager != null ? mTunerConfigurationManager.getNote(discoveredTuner.getId()) : null;
+                    return note != null ? note : "";
                 case COLUMN_CHANNEL_COUNT:
                     if(discoveredTuner.hasTuner())
                     {
@@ -528,6 +532,31 @@ public class DiscoveredTunerModel extends AbstractTableModel implements Listener
         }
 
         return null;
+    }
+
+    /**
+     * Rod build: sets the note for a tuner (blank removes it), saves it and redraws its row
+     */
+    public void setNote(DiscoveredTuner discoveredTuner, String note)
+    {
+        if(discoveredTuner == null || mTunerConfigurationManager == null)
+        {
+            return;
+        }
+        mTunerConfigurationManager.setNote(discoveredTuner.getId(), note);
+        int row = mDiscoveredTuners.indexOf(discoveredTuner);
+        if(row >= 0)
+        {
+            EventQueue.invokeLater(() -> fireTableRowsUpdated(row, row));
+        }
+    }
+
+    /**
+     * Rod build: the note for a tuner, or null
+     */
+    public String getNote(DiscoveredTuner discoveredTuner)
+    {
+        return discoveredTuner != null && mTunerConfigurationManager != null ? mTunerConfigurationManager.getNote(discoveredTuner.getId()) : null;
     }
 
     @Override

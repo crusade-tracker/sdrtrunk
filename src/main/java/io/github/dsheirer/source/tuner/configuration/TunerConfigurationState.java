@@ -32,6 +32,8 @@ public class TunerConfigurationState
 {
     private List<DisabledTuner> mDisabledTuners = new ArrayList();
     private List<TunerConfiguration> mTunerConfigurations = new ArrayList<>();
+    //Rod build: a note per tuner (tuner id -> text), e.g. why it's disabled
+    private java.util.Map<String,String> mNotes = new java.util.TreeMap<>();
 
     public TunerConfigurationState()
     {
@@ -67,5 +69,18 @@ public class TunerConfigurationState
     public void setTunerConfigurations(List<TunerConfiguration> tunerConfigurations)
     {
         mTunerConfigurations = tunerConfigurations;
+    }
+
+    /**
+     * Rod build: notes per tuner id (e.g. why it's disabled)
+     */
+    public java.util.Map<String,String> getNotes()
+    {
+        return mNotes;
+    }
+
+    public void setNotes(java.util.Map<String,String> notes)
+    {
+        mNotes = notes != null ? notes : new java.util.TreeMap<>();
     }
 }

@@ -52,6 +52,8 @@ public class TunerConfigurationManager implements IDiscoveredTunerStatusListener
     private UserPreferences mUserPreferences;
     private List<DisabledTuner> mDisabledTunerList = new ArrayList<>();
     private List<TunerConfiguration> mTunerConfigurations = new ArrayList<>();
+    //Rod build: a note per tuner id (shown in the Tuners tab and the scanner's admin page)
+    private final java.util.Map<String,String> mNotes = new java.util.concurrent.ConcurrentSkipListMap<>();
     private AtomicBoolean mSavePending = new AtomicBoolean();
     private Lock mLock = new ReentrantLock();
 
@@ -83,6 +85,10 @@ public class TunerConfigurationManager implements IDiscoveredTunerStatusListener
                 TunerConfigurationState state = objectMapper.readValue(configPath.toFile(), TunerConfigurationState.class);
                 mDisabledTunerList.addAll(state.getDisabledTuners());
                 mTunerConfigurations.addAll(state.getTunerConfigurations());
+                if(state.getNotes() != null)
+                {
+                    state.getNotes().forEach((k, v) -> { if(k != null && v != null && !v.isBlank()) mNotes.put(k, v); });
+                }
             }
             catch(IOException ioe)
             {
@@ -112,6 +118,7 @@ public class TunerConfigurationManager implements IDiscoveredTunerStatusListener
         {
             state.setDisabledTuners(new ArrayList<>(mDisabledTunerList));
             state.setTunerConfigurations(new ArrayList<>(mTunerConfigurations));
+            state.setNotes(new java.util.TreeMap<>(mNotes));
         }
         catch(Exception e)
         {
@@ -139,6 +146,34 @@ public class TunerConfigurationManager implements IDiscoveredTunerStatusListener
      * Schedules a configurations save task.  Subsequent calls to this method will be ignored until the
      * save event occurs, thus limiting repetitive saving to a minimum.
      */
+    /**
+     * Rod build: the note for a tuner (by its discovered tuner id), or null
+     */
+    public String getNote(String tunerId)
+    {
+        return tunerId != null ? mNotes.get(tunerId) : null;
+    }
+
+    /**
+     * Rod build: sets (or with blank text removes) the note for a tuner and saves
+     */
+    public void setNote(String tunerId, String note)
+    {
+        if(tunerId == null)
+        {
+            return;
+        }
+        if(note == null || note.isBlank())
+        {
+            mNotes.remove(tunerId);
+        }
+        else
+        {
+            mNotes.put(tunerId, note.trim().length() > 300 ? note.trim().substring(0, 300) : note.trim());
+        }
+        saveConfigurations();
+    }
+
     public void saveConfigurations()
     {
         if(mSavePending.compareAndSet(false, true))

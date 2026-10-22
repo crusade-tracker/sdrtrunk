@@ -71,6 +71,10 @@ public class TunerViewPanel extends JPanel
     private JideSplitPane mSplitPane;
     private JButton mAddRecordingButton;
     private JButton mRemoveRecordingButton;
+    //Rod build: note for the selected tuner (e.g. why it's disabled)
+    private javax.swing.JTextField mNoteField;
+    private JButton mNoteSaveButton;
+    private DiscoveredTuner mNoteTuner;
 
     /**
      * Constructs an instance
@@ -112,6 +116,7 @@ public class TunerViewPanel extends JPanel
 
                     DiscoveredTuner selected = mDiscoveredTunerModel.getDiscoveredTuner(modelRow);
                     mDiscoveredTunerEditor.setItem(selected);
+                    setNoteTuner(selected);
                     getRemoveRecordingButton().setEnabled(selected instanceof DiscoveredRecordingTuner);
                 }
             }
@@ -193,7 +198,22 @@ public class TunerViewPanel extends JPanel
         buttonPanel.setLayout(new MigLayout("insets 0 1 3 0", "", ""));
         buttonPanel.add(getAddRecordingButton());
         buttonPanel.add(getRemoveRecordingButton());
-        tunerTablePanel.add(buttonPanel);
+        tunerTablePanel.add(buttonPanel, "wrap");
+
+        //Rod build: note for the selected tuner
+        JPanel notePanel = new JPanel();
+        notePanel.setLayout(new MigLayout("insets 0 1 3 0", "[][fill,grow][]", ""));
+        notePanel.add(new javax.swing.JLabel("Note:"));
+        mNoteField = new javax.swing.JTextField();
+        mNoteField.setToolTipText("A note for the selected tuner, e.g. why it's disabled. Shown in the Note column and on the scanner's admin page.");
+        mNoteField.setEnabled(false);
+        mNoteField.addActionListener(e -> saveNote());
+        notePanel.add(mNoteField);
+        mNoteSaveButton = new JButton("Save Note");
+        mNoteSaveButton.setEnabled(false);
+        mNoteSaveButton.addActionListener(e -> saveNote());
+        notePanel.add(mNoteSaveButton);
+        tunerTablePanel.add(notePanel, "growx");
 
         tunerTablePanel.setPreferredSize(new Dimension(200,200));
         JScrollPane editorScroller = new JScrollPane(mDiscoveredTunerEditor);
@@ -207,6 +227,23 @@ public class TunerViewPanel extends JPanel
         mSplitPane.setProportions(new double[]{0.5});
 
         add(mSplitPane);
+    }
+
+    private void setNoteTuner(DiscoveredTuner tuner)
+    {
+        mNoteTuner = tuner;
+        String note = mDiscoveredTunerModel.getNote(tuner);
+        mNoteField.setText(note != null ? note : "");
+        mNoteField.setEnabled(tuner != null);
+        mNoteSaveButton.setEnabled(tuner != null);
+    }
+
+    private void saveNote()
+    {
+        if(mNoteTuner != null)
+        {
+            mDiscoveredTunerModel.setNote(mNoteTuner, mNoteField.getText());
+        }
     }
 
     private JButton getAddRecordingButton()
