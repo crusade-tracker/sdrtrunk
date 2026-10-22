@@ -229,6 +229,7 @@ public class SDRTrunk implements Listener<TunerEvent>
         }
 
         mSpectralPanel = new SpectralDisplayPanel(mPlaylistManager, mSettingsManager, mTunerManager.getDiscoveredTunerModel());
+        mSpectralPanel.setMainDisplay(true);
 
         TunerSpectralDisplayManager tunerSpectralDisplayManager = new TunerSpectralDisplayManager(mSpectralPanel,
             mPlaylistManager, mSettingsManager, mTunerManager.getDiscoveredTunerModel());
@@ -243,6 +244,11 @@ public class SDRTrunk implements Listener<TunerEvent>
         //Close from the admin page (app_shutdown): the same steps as File > Exit, on the Swing thread
         if(!GraphicsEnvironment.isHeadless())
         {
+            //Spectrum & waterfall switch on the admin page: reports which tuner the main panel is showing
+            statusReporter.setSpectrumTuner(() -> {
+                Tuner shown = mSpectralPanel.getTuner();
+                return shown != null ? shown.getPreferredName() : null;
+            });
             statusReporter.setShutdownAction(() -> EventQueue.invokeLater(() -> {
                 processShutdown();
                 System.exit(0);

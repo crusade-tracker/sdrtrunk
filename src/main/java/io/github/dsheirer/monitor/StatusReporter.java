@@ -134,6 +134,8 @@ public class StatusReporter
     private volatile long mFastUntil = 0;
     //Close from the admin page: the command's answer goes out with the next report, then SDR-Trunk closes like File > Exit
     private volatile Runnable mShutdownAction;
+    //Spectrum & waterfall switch: which tuner the main window's spectrum panel shows (null = none)
+    private volatile java.util.function.Supplier<String> mSpectrumTuner;
     private volatile long mShutdownAt = 0;          //ms the close was asked for (0 = not asked)
     private volatile int mShutdownReport = -1;      //report count when it was asked
     private int mReportCount = 0;
@@ -218,6 +220,14 @@ public class StatusReporter
     public void setShutdownAction(Runnable action)
     {
         mShutdownAction = action;
+    }
+
+    /**
+     * Rod build: tells the reporter which tuner the main spectrum panel shows. Without it the switch isn't offered.
+     */
+    public void setSpectrumTuner(java.util.function.Supplier<String> spectrumTuner)
+    {
+        mSpectrumTuner = spectrumTuner;
     }
 
     /**
@@ -627,6 +637,23 @@ public class StatusReporter
             if(mShutdownAction != null)
             {
                 features.add("app_shutdown");
+            }
+            java.util.function.Supplier<String> spectrumTuner = mSpectrumTuner;
+            if(spectrumTuner != null)
+            {
+                features.add("spectrum_switch");
+                Map<String,Object> spectrum = new LinkedHashMap<>();
+                spectrum.put("enabled", io.github.dsheirer.properties.SystemProperties.getInstance()
+                    .get(io.github.dsheirer.spectrum.SpectralDisplayPanel.SPECTRAL_DISPLAY_ENABLED, true));
+                try
+                {
+                    spectrum.put("showing", spectrumTuner.get());
+                }
+                catch(Exception spEx)
+                {
+                    spectrum.put("showing", null);
+                }
+                body.put("spectrum", spectrum);
             }
             body.put("features", features);
             body.put("aliasVersion", mAliasVersion.get());
@@ -1289,6 +1316,35 @@ public class StatusReporter
                 }
                 startChannel(c);
                 return c.getName() + " started";
+            }
+            case "spectrum_set":
+            {
+                //Same as View > Disable Spectrum & Waterfall (off) or showing the first tuner (on). The setting is saved,
+                //and while it's off the main window's spectrum panel won't show a tuner whoever asks.
+                if(mSpectrumTuner == null)
+                {
+                    throw new Exception("this SDR-Trunk has no spectrum display (no window - headless)");
+                }
+                boolean on = "on".equalsIgnoreCase(String.valueOf(value));
+                DiscoveredTunerModel model = mTunerManager.getDiscoveredTunerModel();
+                io.github.dsheirer.properties.SystemProperties.getInstance()
+                    .set(io.github.dsheirer.spectrum.SpectralDisplayPanel.SPECTRAL_DISPLAY_ENABLED, on);
+                if(!on)
+                {
+                    model.broadcast(new io.github.dsheirer.source.tuner.TunerEvent(null,
+                        io.github.dsheirer.source.tuner.TunerEvent.Event.REQUEST_CLEAR_MAIN_SPECTRAL_DISPLAY));
+                    return "Spectrum & waterfall off (saved) - stays off until turned on here or from SDR-Trunk's View menu / Tuners tab";
+                }
+                for(DiscoveredTuner dt: model.getAvailableTuners())
+                {
+                    if(dt.hasTuner())
+                    {
+                        model.broadcast(new io.github.dsheirer.source.tuner.TunerEvent(dt.getTuner(),
+                            io.github.dsheirer.source.tuner.TunerEvent.Event.REQUEST_MAIN_SPECTRAL_DISPLAY));
+                        return "Spectrum & waterfall on (saved) - showing " + dt.getTuner().getPreferredName();
+                    }
+                }
+                return "Spectrum & waterfall on (saved) - no running tuner to show yet";
             }
             case "app_shutdown":
             {

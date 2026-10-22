@@ -108,6 +108,8 @@ public class SpectralDisplayPanel extends JPanel
     private SettingsManager mSettingsManager;
     private DiscoveredTunerModel mDiscoveredTunerModel;
     private Tuner mTuner;
+    //Rod build: the main window's panel honours "Disable Spectrum & Waterfall" whoever asks (a separate spectrum window doesn't)
+    private boolean mMainDisplay = false;
 
     /**
      * Spectral Display Panel provides a frequency component display with a
@@ -420,8 +422,34 @@ public class SpectralDisplayPanel extends JPanel
      * Responds to tuner event by deregistering from the current
      * complex sample buffer source and registering with the tuner argument.
      */
+    /**
+     * Rod build: marks this as the main window's panel - it then refuses to show a tuner while the spectrum & waterfall
+     * is disabled (spectral.display.enabled = false), and logs who asked.
+     */
+    public void setMainDisplay(boolean main)
+    {
+        mMainDisplay = main;
+    }
+
     public void showTuner(Tuner tuner)
     {
+        if(mMainDisplay && tuner != null && !SystemProperties.getInstance().get(SPECTRAL_DISPLAY_ENABLED, true))
+        {
+            StringBuilder from = new StringBuilder();
+            for(StackTraceElement e: Thread.currentThread().getStackTrace())
+            {
+                String c = e.getClassName();
+                if(c.startsWith("io.github.dsheirer") && !c.equals(SpectralDisplayPanel.class.getName()) && from.length() < 400)
+                {
+                    from.append(from.length() > 0 ? " < " : "").append(c.substring(c.lastIndexOf('.') + 1)).append('.')
+                        .append(e.getMethodName()).append(':').append(e.getLineNumber());
+                }
+            }
+            mLog.info("Spectrum & waterfall is off - not showing [" + tuner.getPreferredName() + "] (asked by " + from + ")");
+            clearTuner();
+            return;
+        }
+
         clearTuner();
 
         mComplexDftProcessor.clearBuffer();
