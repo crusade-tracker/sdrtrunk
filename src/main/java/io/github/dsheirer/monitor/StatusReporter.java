@@ -1656,9 +1656,19 @@ public class StatusReporter
                 }
                 config.setMinimumFrequency(min);
                 config.setMaximumFrequency(max);
+                //The frequency it starts on next time must be inside the new range - SDR-Trunk applies it first at startup,
+                //and one outside Min/Max stops the rest of the saved settings (PPM, sample rate, gain) being applied
+                String moved = "";
+                long saved = config.getFrequency();
+                if(saved < min || saved > max)
+                {
+                    long middle = min + (max - min) / 2;
+                    config.setFrequency(middle);
+                    moved = "; start frequency " + mhz(saved) + " -> " + mhz(middle) + " MHz";
+                }
                 mTunerManager.saveConfigurations();
                 return dt.getId() + " Min/Max " + mhz(beforeMin) + "-" + mhz(beforeMax) + " -> " + mhz(min) + "-" + mhz(max) +
-                    " MHz (saved)" + (dt.hasTuner() ? "" : "; the tuner isn't running, so it applies when it starts");
+                    " MHz (saved)" + moved + (dt.hasTuner() ? "" : "; the tuner isn't running, so it applies when it starts");
             }
             case "tuner_rsp":
             {
