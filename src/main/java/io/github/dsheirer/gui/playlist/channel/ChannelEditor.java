@@ -106,6 +106,7 @@ public class ChannelEditor extends SplitPane implements IFilterProcessor, IAlias
     {
         mPlaylistManager = playlistManager;
         mPlaylistManager.addAliasListRefreshListener(this);
+        mPlaylistManager.addRemoteChannelChangeListener(this::remoteChannelChanged);
         mTunerManager = tunerManager;
         mUserPreferences = userPreferences;
         mUnknownConfigurationEditor = new UnknownConfigurationEditor(mPlaylistManager, mTunerManager,
@@ -124,6 +125,32 @@ public class ChannelEditor extends SplitPane implements IFilterProcessor, IAlias
 
         setOrientation(Orientation.VERTICAL);
         getItems().addAll(topBox, getChannelConfigurationEditor());
+    }
+
+    /**
+     * Rod build: a channel was changed from the scanner's admin page. Redraws the channel table and, when that channel
+     * is open in the editor, reloads it - otherwise the editor keeps showing the old values and Save would write them
+     * back over the change. Unsaved typing in the editor for that same channel is replaced by the admin change.
+     */
+    private void remoteChannelChanged(Channel channel)
+    {
+        Runnable redraw = () -> {
+            getChannelTableView().refresh();
+            ChannelConfigurationEditor editor = getChannelConfigurationEditor();
+            if(channel != null && editor.getItem() == channel)
+            {
+                editor.setItem(channel);
+            }
+        };
+
+        if(Platform.isFxApplicationThread())
+        {
+            redraw.run();
+        }
+        else
+        {
+            Platform.runLater(redraw);
+        }
     }
 
     /**

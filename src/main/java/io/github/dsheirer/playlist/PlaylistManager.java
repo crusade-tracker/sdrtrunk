@@ -149,6 +149,37 @@ public class PlaylistManager implements Listener<ChannelEvent>
         mAliasListRefreshListeners.add(listener);
     }
 
+    //Rod build: told when a channel was changed from the scanner's admin page, so the playlist editor can redraw it
+    private final List<java.util.function.Consumer<io.github.dsheirer.controller.channel.Channel>> mRemoteChannelChangeListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /**
+     * Rod build: adds a listener that is told when a channel was changed from outside the playlist editor (the
+     * scanner's admin page).
+     */
+    public void addRemoteChannelChangeListener(java.util.function.Consumer<io.github.dsheirer.controller.channel.Channel> listener)
+    {
+        mRemoteChannelChangeListeners.add(listener);
+    }
+
+    /**
+     * Rod build: tells the listeners that this channel was changed from outside the playlist editor.
+     */
+    public void fireRemoteChannelChange(io.github.dsheirer.controller.channel.Channel channel)
+    {
+        for(java.util.function.Consumer<io.github.dsheirer.controller.channel.Channel> listener: mRemoteChannelChangeListeners)
+        {
+            try
+            {
+                listener.accept(channel);
+            }
+            catch(Exception e)
+            {
+                mLog.error("Error telling the playlist editor about a channel change", e);
+            }
+        }
+    }
+
     /**
      * Notifies listeners that the alias list will be refreshed
      */

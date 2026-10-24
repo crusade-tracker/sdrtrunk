@@ -4085,6 +4085,8 @@ public class StatusReporter
             return c.getName() + ": nothing to change";
         }
         mPlaylistManager.schedulePlaylistSave();
+        //Redraw SDR-Trunk's playlist editor, so it shows the change and its Save can't put the old values back
+        mPlaylistManager.fireRemoteChannelChange(c);
 
         //Noise squelch thresholds take effect right away on a running channel, as SDR-Trunk's squelch view does them
         boolean squelchOnly = done.stream().allMatch(d -> d.startsWith("noise squelch") || d.startsWith("squelch hysteresis"));
