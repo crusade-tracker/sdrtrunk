@@ -11,7 +11,7 @@ jobs:
         with:
           distribution: liberica
           java-package: 'jdk+fx'
-          java-version: 26
+          java-version: 27
       - name: Compile
         run: |
           set +e
