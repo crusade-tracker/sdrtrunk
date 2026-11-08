@@ -184,6 +184,7 @@ public class RTL2832TunerController extends TunerController
 
         try
         {
+            cancelDelayedStop();
             device = mDevice;
             mDevice = null;
             mStreaming = false;
@@ -496,6 +497,57 @@ public class RTL2832TunerController extends TunerController
     }
 
     /**
+     * Rod build: how long the sample stream keeps running after the last channel on this tuner closes.  A channel
+     * that rotates through its frequencies (or traffic channels that come and go) used to stop and restart the stream
+     * every few seconds, and a stream restart (rtlsdr_reset_buffer in jRTL 1.4.0.2) can crash the JVM inside
+     * libusb.  A channel that arrives within this time reuses the running stream.
+     */
+    private static final long STREAM_STOP_DELAY_MS = 30_000;
+    private java.util.concurrent.ScheduledFuture<?> mDelayedStop;
+
+    /**
+     * Cancels a pending delayed stream stop.  Call while holding the lock.
+     */
+    private void cancelDelayedStop()
+    {
+        if(mDelayedStop != null)
+        {
+            mDelayedStop.cancel(false);
+            mDelayedStop = null;
+        }
+    }
+
+    /**
+     * Stops the stream after STREAM_STOP_DELAY_MS unless a buffer listener was added in the meantime.
+     * Call while holding the lock.
+     */
+    private void scheduleDelayedStop()
+    {
+        cancelDelayedStop();
+        mDelayedStop = io.github.dsheirer.util.ThreadPool.SCHEDULED.schedule(() -> {
+            getLock().lock();
+
+            try
+            {
+                mDelayedStop = null;
+
+                if(!hasBufferListeners())
+                {
+                    stopStreaming();
+                }
+            }
+            catch(SourceException se)
+            {
+                mLog.error("Error stopping streaming on RTL-2832 tuner", se);
+            }
+            finally
+            {
+                getLock().unlock();
+            }
+        }, STREAM_STOP_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /**
      * Adds the IQ buffer listener and automatically starts streaming, if not already started.
      */
     @Override
@@ -507,6 +559,7 @@ public class RTL2832TunerController extends TunerController
         {
             if(mDevice != null)
             {
+                cancelDelayedStop();   //Rod build: reuse the stream that's still running
                 super.addBufferListener(listener);
                 startStreaming();
             }
@@ -522,7 +575,8 @@ public class RTL2832TunerController extends TunerController
     }
 
     /**
-     * Removes the IQ buffer listener and stops streaming if there are no more listeners.
+     * Removes the IQ buffer listener.  Rod build: when there are no more listeners, the stream stops after
+     * STREAM_STOP_DELAY_MS instead of right away (see STREAM_STOP_DELAY_MS).
      */
     @Override
     public void removeBufferListener(Listener<INativeBuffer> listener)
@@ -533,14 +587,10 @@ public class RTL2832TunerController extends TunerController
         {
             super.removeBufferListener(listener);
 
-            if(!hasBufferListeners())
+            if(!hasBufferListeners() && mStreaming)
             {
-                stopStreaming();
+                scheduleDelayedStop();
             }
-        }
-        catch(SourceException se)
-        {
-            mLog.error("Error stopping streaming on RTL-2832 tuner", se);
         }
         finally
         {
