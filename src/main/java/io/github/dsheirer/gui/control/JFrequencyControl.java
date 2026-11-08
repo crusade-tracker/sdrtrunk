@@ -45,6 +45,8 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 
 /**
  * Custom frequency controller for displaying or editing frequency values in MHz.
@@ -556,24 +558,35 @@ public class JFrequencyControl extends JPanel implements ISourceEventProcessor
             @Override
             public void mouseEntered(MouseEvent e)
             {
-                Digit.this.setBackground(mHighlightColor);
-                repaint();
-            }
+                Color bg = UIManager.getColor("TextField.selectionBackground");
+                Color fg = UIManager.getColor("TextField.selectionForeground");
+                Digit.this.setBackground(bg != null ? bg : Color.YELLOW);
+                Digit.this.setForeground(fg != null ? fg : Color.BLACK);
+                repaint();            }
 
             @Override
             public void mouseExited(MouseEvent e)
             {
-                //Restore the LAF text-field background rather than hardcoding white so the digit
-                //cells match the active theme when the mouse leaves.
-                Color textBg = javax.swing.UIManager.getColor("TextField.background");
-                Digit.this.setBackground(textBg != null ? textBg : Color.WHITE);
-                repaint();
-            }
+                Color bg = UIManager.getColor("TextField.background");
+                Color fg = UIManager.getColor("TextField.foreground");
+                Digit.this.setBackground(bg != null ? bg : Color.WHITE);
+                Digit.this.setForeground(fg != null ? fg : Color.BLACK);
+                repaint();            }
 
             @Override
             public void mouseWheelMoved(MouseWheelEvent e)
             {
-                set(mValue - e.getWheelRotation());
+                //Swing delivers mouse wheel events to disabled components, so check enabled state explicitly so that
+                //the wheel can't bypass the lock when the tuner is providing channels.
+                if(isEnabled())
+                {
+                    set(mValue - e.getWheelRotation());
+                }
+                else if(getParent() != null)
+                {
+                    //Pass the event up so that an enclosing scroll pane can still scroll while this control is locked
+                    getParent().dispatchEvent(SwingUtilities.convertMouseEvent(Digit.this, e, getParent()));
+                }
             }
         }
     }
