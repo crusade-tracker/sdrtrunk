@@ -24,7 +24,7 @@ public class DecodeConfigJMBENoiseGainTest
 
     private float load(String gain) throws Exception
     {
-        String xml = "<config xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:jmbeNoiseGain=\"" + gain + "\"/>";
+        String xml = "<config xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"decodeConfigDMR\" xsi:jmbeNoiseGain=\"" + gain + "\"/>";
         return mapper().readValue(xml, DecodeConfigDMR.class).getComfortNoiseGain();
     }
 
