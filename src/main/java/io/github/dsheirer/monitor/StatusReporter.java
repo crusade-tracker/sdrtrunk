@@ -144,6 +144,8 @@ public class StatusReporter
     private String mLastProblem;
     //Radio Reference (scanner admin's Radio Reference section): same login and lookups as SDR-Trunk's own tab
     private final io.github.dsheirer.preference.UserPreferences mUserPreferences;
+    //Rod 045: baseband recordings started from the admin page - tuner id -> {file, size so far}
+    private final Map<String,String[]> mTunerRecordings = new java.util.concurrent.ConcurrentHashMap<>();
     private io.github.dsheirer.gui.playlist.radioreference.RadioReferenceDecoder mRRDecoder;
     private io.github.dsheirer.gui.playlist.radioreference.SiteEditor mRRSiteEditor;
     private final java.util.concurrent.ExecutorService mRRExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -633,7 +635,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            List<String> features = new ArrayList<>(List.of("tuner_notes", "channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased"));
+            List<String> features = new ArrayList<>(List.of("tuner_notes", "channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased", "settings_045"));
             if(mShutdownAction != null)
             {
                 features.add("app_shutdown");
@@ -815,6 +817,19 @@ public class StatusReporter
                 if(tuner.getChannelSourceManager() != null)
                 {
                     m.put("channels", tuner.getChannelSourceManager().getTunerChannelCount());
+                }
+                if(tc != null)
+                {
+                    //Rod 045: as the tuner editor - frequency / sample rate locked while channels are active, and the
+                    //baseband recording (file and size so far)
+                    m.put("locked", tc.isLockedSampleRate());
+                    m.put("recording", tc.isRecording());
+                    String[] rec = mTunerRecordings.get(dt.getId());
+                    if(tc.isRecording() && rec != null)
+                    {
+                        m.put("recordingFile", rec[0]);
+                        m.put("recordingSize", Long.parseLong(rec[1]));
+                    }
                 }
                 if(tc instanceof io.github.dsheirer.source.tuner.sdrplay.RspTunerController<?> rsp)
                 {
@@ -1172,6 +1187,7 @@ public class StatusReporter
                 m.put("freqs", sctm.getFrequencies());
                 m.put("preferredTuner", sctm.getPreferredTuner());
                 m.put("source", "tuner");
+                m.put("rotationDelay", sctm.getFrequencyRotationDelay());   //ms on each frequency while seeking
             }
             out.add(m);
         }
@@ -1678,6 +1694,58 @@ public class StatusReporter
                 mTunerManager.saveConfigurations();
                 return dt.getId() + " Min/Max " + mhz(beforeMin) + "-" + mhz(beforeMax) + " -> " + mhz(min) + "-" + mhz(max) +
                     " MHz (saved)" + moved + (dt.hasTuner() ? "" : "; the tuner isn't running, so it applies when it starts");
+            }
+            case "tuner_record":
+            {
+                //Rod 045: the tuner editor's Record button - a baseband recording of the whole tuner
+                DiscoveredTuner dt = findTuner(target);
+                if(!dt.hasTuner())
+                {
+                    throw new Exception(dt.getId() + " isn't running");
+                }
+                TunerController tc = dt.getTuner().getTunerController();
+                boolean on = "on".equals(String.valueOf(value));
+                if(on == tc.isRecording())
+                {
+                    return dt.getId() + ": baseband recording already " + (on ? "on" : "off");
+                }
+                if(on)
+                {
+                    String id = dt.getId();
+                    tc.startRecorder(mUserPreferences, (count, file, size) -> mTunerRecordings.put(id, new String[]{file, String.valueOf(size)}),
+                        dt.getTunerClass().name());
+                    return id + ": baseband recording started";
+                }
+                tc.stopRecorder();
+                String[] rec = mTunerRecordings.remove(dt.getId());
+                return dt.getId() + ": baseband recording stopped" + (rec != null ? " - " + rec[0] : "");
+            }
+            case "tuner_freq":
+            {
+                //Rod 045: the tuner editor's frequency control - only while no channels are using the tuner
+                DiscoveredTuner dt = findTuner(target);
+                if(!dt.hasTuner())
+                {
+                    throw new Exception(dt.getId() + " isn't running");
+                }
+                TunerController tc = dt.getTuner().getTunerController();
+                if(tc.isLockedSampleRate())
+                {
+                    throw new Exception("channels are active on this tuner - its frequency can't change now (as in SDR-Trunk)");
+                }
+                long hz = Long.parseLong(String.valueOf(value).trim());
+                if(hz < tc.getMinimumFrequency() || hz > tc.getMaximumFrequency())
+                {
+                    throw new Exception(mhz(hz) + " MHz is outside this tuner's range " + mhz(tc.getMinimumFrequency()) + "-" +
+                        mhz(tc.getMaximumFrequency()) + " MHz");
+                }
+                tc.setFrequency(hz);
+                if(dt.getTunerConfiguration() != null)
+                {
+                    dt.getTunerConfiguration().setFrequency(hz);
+                }
+                mTunerManager.saveConfigurations();
+                return dt.getId() + ": tuned to " + mhz(hz) + " MHz (saved)";
             }
             case "tuner_rsp":
             {
@@ -2708,6 +2776,28 @@ public class StatusReporter
             r.put("antennas", options);
         }
         r.put("model", config != null ? config.getClass().getSimpleName().replace("TunerConfiguration", "") : null);
+        //Rod 045: sample rate (single-tuner rates, as the RSP editors list them), external reference output (RSP2,
+        //RSPduo) and the last gain overload
+        if(control.getSampleRateEnumeration() != null && io.github.dsheirer.source.tuner.sdrplay.RspSampleRate.SINGLE_TUNER_SAMPLE_RATES
+            .contains(control.getSampleRateEnumeration()))
+        {
+            r.put("sampleRate", control.getSampleRateEnumeration().name());
+            List<List<String>> rates = new ArrayList<>();
+            for(io.github.dsheirer.source.tuner.sdrplay.RspSampleRate rate: io.github.dsheirer.source.tuner.sdrplay.RspSampleRate.SINGLE_TUNER_SAMPLE_RATES)
+            {
+                rates.add(List.of(rate.name(), rate.toString()));
+            }
+            r.put("sampleRates", rates);
+        }
+        Object extRef = callGet(control, "isExternalReferenceOutput");
+        if(extRef instanceof Boolean b)
+        {
+            r.put("extRef", b);
+        }
+        if(control instanceof io.github.dsheirer.source.tuner.sdrplay.ControlRsp c && c.getLastGainOverload() > 0)
+        {
+            r.put("overloadAt", c.getLastGainOverload());
+        }
         return r;
     }
 
@@ -2756,6 +2846,52 @@ public class StatusReporter
                 invoke(config, f[1], on);
                 done.add(f[2] + " " + (on ? "on" : "off"));
             }
+        }
+        if(v.get("sampleRate") != null)
+        {
+            io.github.dsheirer.source.tuner.sdrplay.RspSampleRate rate;
+            try
+            {
+                rate = io.github.dsheirer.source.tuner.sdrplay.RspSampleRate.valueOf(str(v.get("sampleRate")));
+            }
+            catch(IllegalArgumentException iae)
+            {
+                throw new Exception("unknown sample rate " + v.get("sampleRate"));
+            }
+            if(!io.github.dsheirer.source.tuner.sdrplay.RspSampleRate.SINGLE_TUNER_SAMPLE_RATES.contains(rate))
+            {
+                throw new Exception(rate + " isn't a single-tuner sample rate");
+            }
+            if(rsp.isLockedSampleRate())
+            {
+                throw new Exception("channels are active on this tuner - the sample rate can't change now (as in SDR-Trunk)");
+            }
+            rsp.setSampleRate(rate);
+            invoke(config, "setSampleRate", rate);
+            //Same as the editor: widen Max (or lower Min) if the Min-Max range is now narrower than the sample rate
+            long span = (long)rate.getSampleRate();
+            if(config != null && config.getMaximumFrequency() - config.getMinimumFrequency() < span)
+            {
+                if(config.getMinimumFrequency() + span <= rsp.getMaximumFrequency())
+                {
+                    config.setMaximumFrequency(config.getMinimumFrequency() + span);
+                }
+                else if(config.getMaximumFrequency() - span >= rsp.getMinimumFrequency())
+                {
+                    config.setMinimumFrequency(config.getMaximumFrequency() - span);
+                }
+            }
+            done.add("sample rate " + rate);
+        }
+        if(v.get("extRef") instanceof Boolean on)
+        {
+            if(findMethod(control, "setExternalReferenceOutput", 1) == null)
+            {
+                throw new Exception("this RSP model has no external reference output");
+            }
+            invoke(control, "setExternalReferenceOutput", on);
+            invoke(config, "setExternalReferenceOutput", on);
+            done.add("external reference output " + (on ? "on" : "off"));
         }
         if(v.get("antenna") != null)
         {
@@ -4260,6 +4396,22 @@ public class StatusReporter
             }
             c.setSourceConfiguration(sc);
         }
+        if(change.containsKey("rotationDelay"))
+        {
+            //Rod 045: as the P25 / DMR editors' spinner - 200 to 2000 ms, for channels with more than one frequency
+            if(!(c.getSourceConfiguration() instanceof SourceConfigTunerMultipleFrequency multi))
+            {
+                throw new Exception("the frequency rotation delay is for channels with more than one frequency");
+            }
+            int ms = Integer.parseInt(str(change.get("rotationDelay")));
+            if(ms < io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MINIMUM ||
+                ms > io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MAXIMUM)
+            {
+                throw new Exception("the frequency rotation delay must be 200 to 2000 ms");
+            }
+            multi.setFrequencyRotationDelay(ms);
+            done.add("frequency rotation delay");
+        }
 
         io.github.dsheirer.module.decode.config.DecodeConfiguration dc = c.getDecodeConfiguration();
         if(change.containsKey("modulation"))
@@ -4509,6 +4661,16 @@ public class StatusReporter
             {
                 //no defaults for this type
             }
+            defaults.put("rotationDelay", io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_DEFAULT);
+            if(type == io.github.dsheirer.module.decode.DecoderType.MPT1327)
+            {
+                List<List<String>> syncs = new ArrayList<>();
+                for(io.github.dsheirer.module.decode.mpt1327.Sync sy: io.github.dsheirer.module.decode.mpt1327.Sync.values())
+                {
+                    syncs.add(List.of(sy.name(), sy.toString()));
+                }
+                m.put("mptSyncs", syncs);
+            }
             m.put("defaults", defaults);
             out.put(type.name(), m);
         }
@@ -4599,6 +4761,54 @@ public class StatusReporter
     private void applyOtherDecoders(io.github.dsheirer.module.decode.config.DecodeConfiguration dc, Map<String,Object> change,
                                     List<String> done) throws Exception
     {
+        //Rod 045: digital voice (JMBE) audio - P25 Phase 1 / 2, DMR, NXDN
+        if(change.containsKey("jmbeAgc") || change.containsKey("toneGain") || change.containsKey("noiseGain") || change.containsKey("legacyTones"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.config.DecodeConfigJMBE j))
+            {
+                throw new Exception("audio AGC, tone volume, comfort noise and legacy tone levels are P25 / DMR / NXDN settings");
+            }
+            if(change.containsKey("jmbeAgc"))
+            {
+                j.setAGC(Boolean.TRUE.equals(change.get("jmbeAgc")));
+                done.add("audio AGC");
+            }
+            for(String[] k: new String[][]{{"toneGain", "tone volume"}, {"noiseGain", "comfort noise volume"}})
+            {
+                if(change.containsKey(k[0]))
+                {
+                    float g;
+                    try
+                    {
+                        g = Float.parseFloat(str(change.get(k[0])));
+                    }
+                    catch(NumberFormatException nfe)
+                    {
+                        throw new Exception(k[1] + " must be 0 to 1");
+                    }
+                    if(g < 0 || g > 1)
+                    {
+                        throw new Exception(k[1] + " must be 0 to 1");
+                    }
+                    if(k[0].equals("toneGain")) j.setToneGain(g); else j.setComfortNoiseGain(g);
+                    done.add(k[1]);
+                }
+            }
+            if(change.containsKey("legacyTones"))
+            {
+                j.setLegacyToneLevels(Boolean.TRUE.equals(change.get("legacyTones")));
+                done.add("legacy tone levels");
+            }
+        }
+        if(change.containsKey("mptSync"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327 mpt))
+            {
+                throw new Exception("sync is an MPT1327 setting");
+            }
+            mpt.setSync(io.github.dsheirer.module.decode.mpt1327.Sync.valueOf(str(change.get("mptSync"))));
+            done.add("sync");
+        }
         //DMR
         if(change.containsKey("ignoreCrc") || change.containsKey("compressedTalkgroups") || change.containsKey("timeslotMap"))
         {
@@ -4720,6 +4930,15 @@ public class StatusReporter
             p2.setScrambleParameters(new io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters(wacn, sys, nac));
             done.add("WACN / System / NAC");
         }
+        if(change.containsKey("p2AutoDetect"))
+        {
+            if(!(dc instanceof io.github.dsheirer.module.decode.p25.phase2.DecodeConfigP25Phase2 p2))
+            {
+                throw new Exception("auto-detect scramble parameters is a P25 Phase 2 setting");
+            }
+            p2.setAutoDetectScrambleParameters(Boolean.TRUE.equals(change.get("p2AutoDetect")));
+            done.add("auto-detect WACN / System / NAC");
+        }
     }
 
     private static int hex(Object o, String what, int max) throws Exception
@@ -4746,6 +4965,14 @@ public class StatusReporter
      */
     private static void putOtherDecoders(Map<String,Object> m, io.github.dsheirer.module.decode.config.DecodeConfiguration dc)
     {
+        //Rod 045: the digital voice (JMBE) audio settings of the P25 / DMR / NXDN editors
+        if(dc instanceof io.github.dsheirer.module.decode.config.DecodeConfigJMBE j)
+        {
+            m.put("jmbeAgc", j.isAGC());
+            m.put("toneGain", Math.round(j.getToneGain() * 100) / 100.0);
+            m.put("noiseGain", Math.round(j.getComfortNoiseGain() * 100) / 100.0);
+            m.put("legacyTones", j.isLegacyToneLevels());
+        }
         if(dc instanceof io.github.dsheirer.module.decode.am.DecodeConfigAM am)
         {
             m.put("bandwidth", am.getBandwidth() != null ? String.valueOf(am.getBandwidth().getValue() / 1000.0) : null);
@@ -4783,6 +5010,7 @@ public class StatusReporter
             m.put("poolSize", mpt.getTrafficChannelPoolSize());
             m.put("channelMap", mpt.getChannelMapName());
             m.put("callTimeout", mpt.getCallTimeoutSeconds());
+            m.put("mptSync", mpt.getSync() != null ? mpt.getSync().name() : null);
         }
         else if(dc instanceof io.github.dsheirer.module.decode.nxdn.DecodeConfigNXDN nxdn)
         {
@@ -4807,6 +5035,7 @@ public class StatusReporter
             m.put("wacn", Integer.toHexString(sp != null ? sp.getWACN() : 0).toUpperCase());
             m.put("p2System", Integer.toHexString(sp != null ? sp.getSystem() : 0).toUpperCase());
             m.put("nac", Integer.toHexString(sp != null ? sp.getNAC() : 0).toUpperCase());
+            m.put("p2AutoDetect", p2.isAutoDetectScrambleParameters());
         }
     }
 

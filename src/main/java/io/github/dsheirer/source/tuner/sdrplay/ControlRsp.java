@@ -458,9 +458,22 @@ public abstract class ControlRsp<T extends RspDevice> implements IControlRsp
         return mGainOverloadReference != null ? mGainOverloadReference.get() : null;
     }
 
+    //Rod build: when the last gain overload was reported (ms), for the scanner's admin page - the tuner editor keeps
+    //the only status listener, so this is recorded here as well
+    private volatile long mLastGainOverload;
+
+    /**
+     * Rod build: time (ms) of the last gain overload notification from the SDRplay API, or 0 if none yet.
+     */
+    public long getLastGainOverload()
+    {
+        return mLastGainOverload;
+    }
+
     @Override
     public void processPowerOverload(Tuner tuner)
     {
+        mLastGainOverload = System.currentTimeMillis();
         ITunerStatusListener listener = getTunerStatusListener();
 
         if(listener != null)
