@@ -2678,7 +2678,7 @@ public class StatusReporter
         r.put("lnaMax", control.getMaximumLNASetting());
         r.put("lna", control.getLNA());                        //LNA state: 0 = most gain
         r.put("gr", control.getBasebandGainReduction());       //IF gain reduction 20-59 dB: lower = more gain
-        r.put("agc", control.getAgcMode() == io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.ENABLE);
+        r.put("agc", control.getAgcMode() == io.github.dsheirer.source.tuner.sdrplay.RspAgcMode.ENABLE);
         try
         {
             r.put("gain", Math.round(control.getCurrentGain()));
@@ -2736,9 +2736,9 @@ public class StatusReporter
         }
         if(v.get("agc") instanceof Boolean on)
         {
-            io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode mode = on ?
-                io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.ENABLE :
-                io.github.dsheirer.source.tuner.sdrplay.api.parameter.control.AgcMode.DISABLE;
+            io.github.dsheirer.source.tuner.sdrplay.RspAgcMode mode = on ?
+                io.github.dsheirer.source.tuner.sdrplay.RspAgcMode.ENABLE :
+                io.github.dsheirer.source.tuner.sdrplay.RspAgcMode.DISABLE;
             control.setAgcMode(mode);
             invoke(config, "setAgcMode", mode);
             done.add("IF AGC " + (on ? "automatic" : "manual"));
@@ -2779,8 +2779,8 @@ public class StatusReporter
     }
 
     // ---------------------------------------------------------------- RTL-SDR settings (admin Tuners page)
-    // The same settings as SDR-Trunk's RTL-SDR (R820T / R828D) tuner editor: Bias-T, sample rate, master gain and -
-    // with master gain on Manual - mixer, LNA and VGA gain. Other RTL tuner chips only report sample rate and Bias-T.
+    // The same settings as SDR-Trunk's RTL-SDR tuner editor (1.0 driver): Bias-T, sample rate, and gain - one of the
+    // gain steps the dongle's tuner chip reports, or the tuner's automatic gain control (AGC) where the chip has it.
 
     private static List<List<String>> enumOptions(Enum<?>[] values)
     {
@@ -2801,18 +2801,25 @@ public class StatusReporter
             r.put("sampleRate", rc.getSampleRate().name());
         }
         r.put("sampleRates", enumOptions(io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.SampleRate.values()));
-        if(config instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xTunerConfiguration c &&
-            rtl.getEmbeddedTuner() instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner)
+        if(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc)
         {
-            r.put("gains", true);
-            r.put("masterGain", c.getMasterGain() != null ? c.getMasterGain().name() : null);
-            r.put("mixerGain", c.getMixerGain() != null ? c.getMixerGain().name() : null);
-            r.put("lnaGain", c.getLNAGain() != null ? c.getLNAGain().name() : null);
-            r.put("vgaGain", c.getVGAGain() != null ? c.getVGAGain().name() : null);
-            r.put("masterGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.values()));
-            r.put("mixerGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain.values()));
-            r.put("lnaGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain.values()));
-            r.put("vgaGains", enumOptions(io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain.values()));
+            if(rtl.hasGainControl() && rtl.getTunerGains() != null && rtl.getTunerGains().length > 0)
+            {
+                //gain steps in tenths of a dB, as SDR-Trunk's editor lists them
+                List<List<String>> options = new ArrayList<>();
+                for(int g: rtl.getTunerGains())
+                {
+                    options.add(List.of(String.valueOf(g), String.format("%.1f dB", g / 10.0)));
+                }
+                r.put("gainOptions", options);
+                r.put("gain", String.valueOf(rtl.getClosestTunerGain(rc.getGain())));
+                r.put("agcSupported", rtl.hasTunerAGC());
+                r.put("agc", rtl.hasTunerAGC() && rc.isAGC());
+            }
+            else
+            {
+                r.put("gainFixed", true);   //this tuner chip always uses its own automatic gain
+            }
         }
         return r;
     }
@@ -2854,65 +2861,42 @@ public class StatusReporter
             }
             done.add("sample rate " + rate.getLabel());
         }
-        boolean gains = v.containsKey("masterGain") || v.containsKey("mixerGain") || v.containsKey("lnaGain") || v.containsKey("vgaGain");
-        if(gains)
+        if(v.containsKey("agc") || v.containsKey("gain"))
         {
-            if(!(config instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xTunerConfiguration c) ||
-                !(rtl.getEmbeddedTuner() instanceof io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner tuner))
+            if(!(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc) || !rtl.hasGainControl())
             {
-                throw new Exception("gain settings are only available for R820T / R828D tuners here - change them in SDR-Trunk");
+                throw new Exception("this tuner chip always uses its own automatic gain - there's no gain to set");
             }
-            try
+            boolean agc = v.get("agc") instanceof Boolean b ? b : rc.isAGC();
+            if(agc && !rtl.hasTunerAGC())
             {
-                if(v.get("masterGain") != null)
+                throw new Exception("this tuner chip has no automatic gain control (AGC)");
+            }
+            int gain = rc.getGain();
+            if(v.get("gain") != null)
+            {
+                try
                 {
-                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain mg =
-                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.valueOf(str(v.get("masterGain")));
-                    tuner.setGain(mg, true);
-                    c.setMasterGain(mg);
-                    //Like the editor: a preset master gain also sets the three gains it stands for
-                    if(mg != io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.MANUAL)
-                    {
-                        c.setMixerGain(mg.getMixerGain());
-                        c.setLNAGain(mg.getLNAGain());
-                        c.setVGAGain(mg.getVGAGain());
-                    }
-                    done.add("master gain " + mg);
+                    gain = Integer.parseInt(str(v.get("gain")));
                 }
-                boolean manual = c.getMasterGain() == io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MasterGain.MANUAL;
-                if((v.get("mixerGain") != null || v.get("lnaGain") != null || v.get("vgaGain") != null) && !manual)
+                catch(NumberFormatException nfe)
                 {
-                    throw new Exception("set master gain to Manual to change mixer, LNA or VGA gain");
+                    throw new Exception("unknown gain " + v.get("gain"));
                 }
-                if(v.get("mixerGain") != null)
+                boolean supported = false;
+                for(int g: rtl.getTunerGains())
                 {
-                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain g =
-                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.MixerGain.valueOf(str(v.get("mixerGain")));
-                    tuner.setMixerGain(g, true);
-                    c.setMixerGain(g);
-                    done.add("mixer gain " + g);
+                    supported |= g == gain;
                 }
-                if(v.get("lnaGain") != null)
+                if(!supported)
                 {
-                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain g =
-                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.LNAGain.valueOf(str(v.get("lnaGain")));
-                    tuner.setLNAGain(g, true);
-                    c.setLNAGain(g);
-                    done.add("LNA gain " + g);
-                }
-                if(v.get("vgaGain") != null)
-                {
-                    io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain g =
-                        io.github.dsheirer.source.tuner.rtl.r8x.R8xEmbeddedTuner.VGAGain.valueOf(str(v.get("vgaGain")));
-                    tuner.setVGAGain(g, true);
-                    c.setVGAGain(g);
-                    done.add("VGA gain " + g);
+                    throw new Exception(String.format("%.1f dB isn't one of this dongle's gain steps", gain / 10.0));
                 }
             }
-            catch(IllegalArgumentException iae)
-            {
-                throw new Exception("unknown gain setting: " + iae.getMessage());
-            }
+            rtl.setGain(agc, gain);
+            rc.setAGC(agc);
+            rc.setGain(gain);
+            done.add(agc ? "gain automatic (AGC)" : String.format("gain %.1f dB", gain / 10.0));
         }
         if(done.isEmpty())
         {
