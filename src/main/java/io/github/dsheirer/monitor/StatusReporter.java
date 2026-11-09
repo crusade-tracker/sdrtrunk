@@ -635,7 +635,7 @@ public class StatusReporter
             {
                 //changed while reading - next report
             }
-            List<String> features = new ArrayList<>(List.of("tuner_notes", "channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased", "settings_045"));
+            List<String> features = new ArrayList<>(List.of("tuner_notes", "channel_create", "channel_delete", "radio_reference", "rr_talkgroups", "rr_agencies", "channel_sections", "all_decoders", "alias_lists", "streaming", "noise_reduction", "am_noise_reduction", "nbfm_squelch", "rsp_settings", "alias_version", "alias_edit", "rtl_settings", "call_management", "follow_aliased", "settings_045", "settings_046"));
             if(mShutdownAction != null)
             {
                 features.add("app_shutdown");
@@ -823,6 +823,12 @@ public class StatusReporter
                     //Rod 045: as the tuner editor - frequency / sample rate locked while channels are active, and the
                     //baseband recording (file and size so far)
                     m.put("locked", tc.isLockedSampleRate());
+                    long[] full = tunableRange(dt);
+                    if(full != null)
+                    {
+                        m.put("tunableMin", full[0]);   //Rod 046: what Min/Max Reset sets
+                        m.put("tunableMax", full[1]);
+                    }
                     m.put("recording", tc.isRecording());
                     String[] rec = mTunerRecordings.get(dt.getId());
                     if(tc.isRecording() && rec != null)
@@ -1656,18 +1662,32 @@ public class StatusReporter
                 DiscoveredTuner dt = findTuner(target);
                 Map<String,Object> v = parseValue(value);
                 long min, max;
-                try
+                if(Boolean.TRUE.equals(v.get("reset")))
                 {
-                    min = Long.parseLong(String.valueOf(v.get("min")));
-                    max = Long.parseLong(String.valueOf(v.get("max")));
+                    //Rod 046: the tuner editor's Reset - the dongle's full tunable range
+                    long[] full = tunableRange(dt);
+                    if(full == null)
+                    {
+                        throw new Exception(dt.getId() + ": its full tunable range isn't known here - set Min/Max by hand");
+                    }
+                    min = full[0];
+                    max = full[1];
                 }
-                catch(NumberFormatException nfe)
+                else
                 {
-                    throw new Exception("Min and Max must be frequencies in Hz");
-                }
-                if(min < 1_000_000 || max > 6_000_000_000L || min >= max)
-                {
-                    throw new Exception("Min must be below Max, both between 1 MHz and 6 GHz");
+                    try
+                    {
+                        min = Long.parseLong(String.valueOf(v.get("min")));
+                        max = Long.parseLong(String.valueOf(v.get("max")));
+                    }
+                    catch(NumberFormatException nfe)
+                    {
+                        throw new Exception("Min and Max must be frequencies in Hz");
+                    }
+                    if(min < 1_000_000 || max > 6_000_000_000L || min >= max)
+                    {
+                        throw new Exception("Min must be below Max, both between 1 MHz and 6 GHz");
+                    }
                 }
                 TunerConfiguration config = dt.getTunerConfiguration();
                 if(config == null)
@@ -2937,6 +2957,20 @@ public class StatusReporter
             r.put("sampleRate", rc.getSampleRate().name());
         }
         r.put("sampleRates", enumOptions(io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.SampleRate.values()));
+        //Rod 046: the RTL editor's Info - tuner chip and the dongle's EEPROM descriptor
+        Map<String,Object> info = new LinkedHashMap<>();
+        info.put("tuner", rtl.getTunerType() != null ? rtl.getTunerType().getLabel() : null);
+        io.github.dsheirer.source.tuner.rtl.RTL2832TunerController.Descriptor d = rtl.getDescriptor();
+        if(d != null && d.isValid())
+        {
+            info.put("usbId", d.getVendorID() + ":" + d.getProductID());
+            info.put("vendor", d.getVendorLabel());
+            info.put("product", d.getProductLabel());
+            info.put("serial", d.getSerial());
+            info.put("ir", d.irEnabled());
+            info.put("remoteWake", d.remoteWakeupEnabled());
+        }
+        r.put("info", info);
         if(config instanceof io.github.dsheirer.source.tuner.rtl.RTL2832TunerConfiguration rc)
         {
             if(rtl.hasGainControl() && rtl.getTunerGains() != null && rtl.getTunerGains().length > 0)
@@ -4373,6 +4407,7 @@ public class StatusReporter
                     SourceConfigTunerMultipleFrequency multi = new SourceConfigTunerMultipleFrequency();
                     multi.setPreferredTuner(single.getPreferredTuner());
                     multi.setFrequencies(freqs);
+                    multi.setFrequencyRotationDelay(rotationRange(c)[2]);   //this decoder's default, as its editor
                     sc = multi;
                 }
                 else
@@ -4398,16 +4433,17 @@ public class StatusReporter
         }
         if(change.containsKey("rotationDelay"))
         {
-            //Rod 045: as the P25 / DMR editors' spinner - 200 to 2000 ms, for channels with more than one frequency
-            if(!(c.getSourceConfiguration() instanceof SourceConfigTunerMultipleFrequency multi))
+            //Rod 046: SDR-Trunk's frequency box - for channels with two or more frequencies, in the decoder's own range
+            if(!(c.getSourceConfiguration() instanceof SourceConfigTunerMultipleFrequency multi) || multi.getFrequencies() == null ||
+                multi.getFrequencies().size() < 2)
             {
-                throw new Exception("the frequency rotation delay is for channels with more than one frequency");
+                throw new Exception("the frequency rotation delay is for channels with two or more frequencies");
             }
             int ms = Integer.parseInt(str(change.get("rotationDelay")));
-            if(ms < io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MINIMUM ||
-                ms > io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MAXIMUM)
+            int[] range = rotationRange(c);
+            if(ms < range[0] || ms > range[1])
             {
-                throw new Exception("the frequency rotation delay must be 200 to 2000 ms");
+                throw new Exception("the frequency rotation delay must be " + range[0] + " to " + range[1] + " ms for this decoder");
             }
             multi.setFrequencyRotationDelay(ms);
             done.add("frequency rotation delay");
@@ -4623,6 +4659,80 @@ public class StatusReporter
      * Per decoder: the Logging / Recording / Additional Decoders choices with SDR-Trunk's labels (for the scanner's
      * channel form)
      */
+    /**
+     * Rod 046: the frequency rotation delay range and default (ms) of each decoder's channel editor - SDR-Trunk's shared
+     * frequency box, enabled when the channel has two or more frequencies.  {minimum, maximum, default}
+     */
+    private static int[] rotationRange(io.github.dsheirer.module.decode.DecoderType type)
+    {
+        if(type == io.github.dsheirer.module.decode.DecoderType.P25_PHASE1)
+        {
+            return new int[]{io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1.CHANNEL_ROTATION_DELAY_MINIMUM_MS,
+                io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1.CHANNEL_ROTATION_DELAY_MAXIMUM_MS,
+                io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1.CHANNEL_ROTATION_DELAY_DEFAULT_MS};
+        }
+        if(type == io.github.dsheirer.module.decode.DecoderType.DMR || type == io.github.dsheirer.module.decode.DecoderType.NXDN)
+        {
+            return new int[]{io.github.dsheirer.module.decode.dmr.DecodeConfigDMR.CHANNEL_ROTATION_DELAY_MINIMUM_MS,
+                io.github.dsheirer.module.decode.dmr.DecodeConfigDMR.CHANNEL_ROTATION_DELAY_MAXIMUM_MS,
+                io.github.dsheirer.module.decode.dmr.DecodeConfigDMR.CHANNEL_ROTATION_DELAY_DEFAULT_MS};
+        }
+        if(type == io.github.dsheirer.module.decode.DecoderType.MPT1327)
+        {
+            return new int[]{io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327.CHANNEL_ROTATION_DELAY_MINIMUM_MS,
+                io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327.CHANNEL_ROTATION_DELAY_MAXIMUM_MS,
+                io.github.dsheirer.module.decode.mpt1327.DecodeConfigMPT1327.CHANNEL_ROTATION_DELAY_DEFAULT_MS};
+        }
+        return new int[]{io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MINIMUM,
+            io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_MAXIMUM,
+            io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_DEFAULT};
+    }
+
+    private static int[] rotationRange(Channel c)
+    {
+        return rotationRange(c.getDecodeConfiguration() != null ? c.getDecodeConfiguration().getDecoderType() : null);
+    }
+
+    /**
+     * Rod 046: a tuner's full tunable range {min, max} in Hz, from its configuration or controller class
+     * (MINIMUM_TUNABLE_FREQUENCY_HZ / MAXIMUM_TUNABLE_FREQUENCY_HZ), or null if it isn't known
+     */
+    private static long[] tunableRange(DiscoveredTuner dt)
+    {
+        List<Class<?>> classes = new ArrayList<>();
+        if(dt.getTunerConfiguration() != null)
+        {
+            classes.add(dt.getTunerConfiguration().getClass());
+        }
+        if(dt.hasTuner() && dt.getTuner().getTunerController() != null)
+        {
+            classes.add(dt.getTuner().getTunerController().getClass());
+        }
+        for(Class<?> start: classes)
+        {
+            for(Class<?> k = start; k != null; k = k.getSuperclass())
+            {
+                try
+                {
+                    java.lang.reflect.Field fMin = k.getDeclaredField("MINIMUM_TUNABLE_FREQUENCY_HZ");
+                    java.lang.reflect.Field fMax = k.getDeclaredField("MAXIMUM_TUNABLE_FREQUENCY_HZ");
+                    fMin.setAccessible(true);
+                    fMax.setAccessible(true);
+                    long min = ((Number)fMin.get(null)).longValue(), max = ((Number)fMax.get(null)).longValue();
+                    if(min > 0 && max > min)
+                    {
+                        return new long[]{min, max};
+                    }
+                }
+                catch(Exception e)
+                {
+                    //not on this class
+                }
+            }
+        }
+        return null;
+    }
+
     private static Map<String,Object> channelOptions()
     {
         Map<String,Object> out = new LinkedHashMap<>();
@@ -4661,7 +4771,9 @@ public class StatusReporter
             {
                 //no defaults for this type
             }
-            defaults.put("rotationDelay", io.github.dsheirer.source.tuner.channel.rotation.ChannelRotationMonitor.CHANNEL_ROTATION_DELAY_DEFAULT);
+            int[] rot = rotationRange(type);
+            defaults.put("rotationDelay", rot[2]);
+            m.put("rotation", List.of(rot[0], rot[1], rot[2]));   //Rod 046: min, max, default (ms)
             if(type == io.github.dsheirer.module.decode.DecoderType.MPT1327)
             {
                 List<List<String>> syncs = new ArrayList<>();
